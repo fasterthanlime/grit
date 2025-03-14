@@ -1,6 +1,17 @@
+// Rules:
+// 1. Always use eprintln!(), not println!()
+// 2. Be friendly with colors and emojis but not too uppity
+// 3. FIRST come up with a plan, gathering all the data, THEN apply it
+// 4. Ask for consent before applying the plan, showing the exact commands to run
+// 5. When skipping a repo, explain why (couldn't parse git-rev, etc.)
+// 6. Better to panic if git output isn't as expected than to do harmful things
+// 7. When printing specific values, like paths, numbers, keywords like "yes" and "no", use colors suited to the theme
+
 use camino::{Utf8Path, Utf8PathBuf};
 use eyre::WrapErr;
 use owo_colors::OwoColorize;
+use std::io::{self, Write};
+use std::process::Command;
 
 /// Returns the path to the grit configuration file.
 pub fn get_config_path() -> String {
@@ -20,12 +31,50 @@ fn read_repos_from_config(config_path: &str) -> eyre::Result<Vec<Utf8PathBuf>> {
     let config_file = Utf8PathBuf::from(config_path);
 
     if !config_file.exists() {
+        eprintln!("Config file not found at {}", config_path.bright_cyan());
+        eprint!(
+            "Do you want to create a default config file? ({}/{}): ",
+            "yes".green(),
+            "no".red()
+        );
+        io::stdout().flush().wrap_err("Failed to flush stdout")?;
+
+        let mut input = String::new();
+        io::stdin()
+            .read_line(&mut input)
+            .wrap_err("Failed to read input")?;
+
+        if input.trim().to_lowercase() != "yes" {
+            eprintln!("Exiting without creating config file.");
+            std::process::exit(0);
+        }
+
         create_default_config(&config_file)?;
         eprintln!(
             "Default config file created at {}",
             config_path.bright_cyan()
         );
-        eprintln!("Please edit the file and run the command again.");
+
+        eprint!("Enter your favorite text editor to open the config file: ");
+        io::stdout().flush().wrap_err("Failed to flush stdout")?;
+
+        let mut editor = String::new();
+        io::stdin()
+            .read_line(&mut editor)
+            .wrap_err("Failed to read input")?;
+        let editor = editor.trim();
+
+        eprintln!(
+            "Opening config file with {}. Press Ctrl+C to quit now if you don't want to proceed.",
+            editor
+        );
+
+        Command::new(editor)
+            .arg(&config_file)
+            .status()
+            .wrap_err("Failed to open editor")?;
+
+        eprintln!("Config file has been opened. The program will now exit. Please run the command again after editing the config file.");
         std::process::exit(0);
     }
 
