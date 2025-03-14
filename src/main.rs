@@ -1,8 +1,8 @@
+use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Parser, Subcommand};
 use owo_colors::OwoColorize;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
-use std::path::Path;
 use std::process::{Command, Output};
 
 /// Program to keep git repositories in sync between computers
@@ -23,7 +23,7 @@ enum Commands {
 
 #[derive(Debug)]
 struct RepoStatus {
-    path: String,
+    path: Utf8PathBuf,
     exists: bool,
     branch: String,
     remote: String,
@@ -41,7 +41,7 @@ fn main() {
     }
 }
 
-fn read_repos() -> Vec<String> {
+fn read_repos() -> Vec<Utf8PathBuf> {
     // Read repository list from ~/.config/grit.conf
     // Format: one repository path per line
     let config_path = shellexpand::tilde("~/.config/grit.conf").to_string();
@@ -49,7 +49,9 @@ fn read_repos() -> Vec<String> {
     let reader = io::BufReader::new(file);
     reader
         .lines()
-        .map(|line| line.expect("Failed to read line"))
+        .map(|line| {
+            Utf8PathBuf::from(shellexpand::tilde(&line.expect("Failed to read line")).to_string())
+        })
         .collect()
 }
 
@@ -58,8 +60,7 @@ fn sync_repos(is_pull: bool) {
     let mut repo_statuses = Vec::new();
 
     for repo in repos {
-        let path = shellexpand::tilde(&repo).to_string();
-        let status = get_repo_status(&path, is_pull);
+        let status = get_repo_status(&repo, is_pull);
         repo_statuses.push(status);
     }
 
@@ -80,8 +81,8 @@ fn sync_repos(is_pull: bool) {
     print_final_summary(&repo_statuses, is_pull);
 }
 
-fn get_repo_status(path: &str, is_pull: bool) -> RepoStatus {
-    let exists = Path::new(path).exists();
+fn get_repo_status(path: &Utf8Path, is_pull: bool) -> RepoStatus {
+    let exists = path.exists();
     let branch = if exists {
         String::from_utf8_lossy(
             &run_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).stdout,
@@ -114,7 +115,7 @@ fn get_repo_status(path: &str, is_pull: bool) -> RepoStatus {
             .is_empty();
 
     RepoStatus {
-        path: path.to_string(),
+        path: path.to_owned(),
         exists,
         branch,
         remote,
@@ -240,7 +241,7 @@ fn print_final_summary(repo_statuses: &[RepoStatus], is_pull: bool) {
     }
 }
 
-fn run_git_command(path: &str, args: &[&str]) -> Output {
+fn run_git_command(path: &Utf8Path, args: &[&str]) -> Output {
     Command::new("git")
         .current_dir(path)
         .args(args)
