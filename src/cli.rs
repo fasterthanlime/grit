@@ -1,6 +1,31 @@
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RepoAction {
+    NeedsStage,
+    NeedsCommit,
+    NeedsPush,
+    UpToDate,
+}
+
+impl RepoAction {
+    pub(crate) fn needs_stage(&self) -> bool {
+        matches!(self, RepoAction::NeedsStage)
+    }
+
+    pub(crate) fn needs_commit(&self) -> bool {
+        matches!(self, RepoAction::NeedsStage | RepoAction::NeedsCommit)
+    }
+
+    pub(crate) fn needs_push(&self) -> bool {
+        matches!(
+            self,
+            RepoAction::NeedsStage | RepoAction::NeedsCommit | RepoAction::NeedsPush
+        )
+    }
+}
+
 /// Program to keep git repositories in sync between computers
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -48,20 +73,11 @@ pub(crate) enum PushStatus {
 
 #[derive(Debug)]
 pub(crate) struct RepoStatus {
-    /// Path to the repository
     pub(crate) path: Utf8PathBuf,
-    /// Whether the repository exists or not
     pub(crate) existence: Existence,
-    /// Current branch of the repository
     pub(crate) branch: String,
-    /// Remote URL of the repository
     pub(crate) remote: String,
-    /// Status of local changes in the repository
-    pub(crate) change_status: ChangeStatus,
-    /// Status of pulling changes from remote
-    pub(crate) pull_status: PullStatus,
-    /// Status of pushing changes to remote
-    pub(crate) push_status: PushStatus,
+    pub(crate) action: RepoAction,
 }
 
 /// Defines the mode of synchronization

@@ -9,7 +9,7 @@
 
 use camino::Utf8Path;
 use clap::Parser;
-use cli::{Args, ChangeStatus, Commands, Existence, PullStatus, PushStatus, RepoStatus, SyncMode};
+use cli::{Args, Commands, Existence, RepoAction, RepoStatus, SyncMode};
 use config::read_repos_from_default_config;
 use eyre::Context;
 use owo_colors::OwoColorize;
@@ -126,48 +126,42 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
         Existence::DoesNotExist => String::new(),
     };
 
-    let change_status = match existence {
-        Existence::Exists => {
-            let output = git::run_git_command(path, &["status", "--porcelain"]).await?;
-            if output.stdout.is_empty() {
-                ChangeStatus::NoChanges
+    let action = match (mode, existence) {
+        (SyncMode::Push, Existence::Exists) => {
+            // Check if there are unstaged changes
+            // 'git status --porcelain' shows a machine-parsable status output
+            let status_output = git::run_git_command(path, &["status", "--porcelain"]).await?;
+
+            // Check if there are commits that haven't been pushed
+            // 'git rev-list @{u}..HEAD' shows commits that are in HEAD but not in the upstream branch
+            let rev_list_output = git::run_git_command(path, &["rev-list", "@{u}..HEAD"]).await?;
+
+            if !status_output.stdout.trim().is_empty() {
+                // There are unstaged changes
+                RepoAction::NeedsStage
+            } else if !rev_list_output.stdout.trim().is_empty() {
+                // There are commits that haven't been pushed
+                RepoAction::NeedsPush
             } else {
-                ChangeStatus::HasChanges
+                // No changes to stage or push
+                RepoAction::UpToDate
             }
         }
-        Existence::DoesNotExist => ChangeStatus::NoChanges,
-    };
-
-    let pull_status = match (mode, existence) {
         (SyncMode::Pull, Existence::Exists) => {
-            // First, fetch all changes
             let fetch_output = git::run_git_command(path, &["fetch", "--all"]).await?;
             if !fetch_output.stderr.is_empty() {
                 eprintln!("  {} Failed to fetch changes", "⚠️".yellow());
                 eprintln!("{}", fetch_output.stderr);
             }
 
-            // Then check if there are changes to pull
-            let output = git::run_git_command(path, &["rev-list", "HEAD..@{u}"]).await?;
-            if output.stdout.trim().is_empty() {
-                PullStatus::UpToDate
+            let rev_list_output = git::run_git_command(path, &["rev-list", "HEAD..@{u}"]).await?;
+            if rev_list_output.stdout.trim().is_empty() {
+                RepoAction::UpToDate
             } else {
-                PullStatus::NeedsPull
+                RepoAction::NeedsPush // This actually means "needs pull" in this context
             }
         }
-        _ => PullStatus::UpToDate,
-    };
-
-    let push_status = match (mode, existence) {
-        (SyncMode::Push, Existence::Exists) => {
-            let output = git::run_git_command(path, &["rev-list", "@{u}..HEAD"]).await?;
-            if output.stdout.trim().is_empty() {
-                PushStatus::UpToDate
-            } else {
-                PushStatus::NeedsPush
-            }
-        }
-        _ => PushStatus::UpToDate,
+        _ => RepoAction::UpToDate,
     };
 
     Ok(RepoStatus {
@@ -175,8 +169,6 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
         existence,
         branch,
         remote,
-        change_status,
-        pull_status,
-        push_status,
+        action,
     })
 }

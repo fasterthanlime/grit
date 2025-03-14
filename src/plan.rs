@@ -4,26 +4,66 @@ use owo_colors::{OwoColorize, Style};
 use std::fmt;
 use std::io::{self, Write};
 
-use crate::cli::{ChangeStatus, Existence, PullStatus, PushStatus, RepoStatus, SyncMode};
+use crate::cli::{Existence, RepoAction, RepoStatus, SyncMode};
 use crate::git;
 
-#[derive(Debug)]
+// In plan.rs, update ActionStep and ExecutionPlan
 pub(crate) enum ActionStep {
+    Stage(Utf8PathBuf),
+    Commit(Utf8PathBuf),
+    Push(Utf8PathBuf),
     Pull(Utf8PathBuf),
-    AddCommitPush {
-        path: Utf8PathBuf,
-        has_changes: bool,
-    },
 }
 
 impl ActionStep {
     pub(crate) async fn execute(&self) -> eyre::Result<()> {
         match self {
+            ActionStep::Stage(path) => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+                let output = git::run_git_command(path, &["add", "."]).await?;
+                if output.stderr.is_empty() {
+                    eprintln!("  {} Changes staged successfully", "✅".green());
+                } else {
+                    eprintln!("  {} Failed to stage changes", "❌".red());
+                    eprintln!("{}", output.stderr);
+                }
+                Ok(())
+            }
+            ActionStep::Commit(path) => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+                eprint!("  Enter commit message: ");
+                io::stdout().flush().wrap_err("Failed to flush stdout")?;
+                let mut commit_msg = String::new();
+                io::stdin()
+                    .read_line(&mut commit_msg)
+                    .wrap_err("Failed to read input")?;
+
+                let output =
+                    git::run_git_command(path, &["commit", "-m", commit_msg.trim()]).await?;
+                if output.stderr.is_empty() || output.stderr.contains("nothing to commit") {
+                    eprintln!("  {} Changes committed successfully", "✅".green());
+                } else {
+                    eprintln!("  {} Failed to commit changes", "❌".red());
+                    eprintln!("{}", output.stderr);
+                }
+                Ok(())
+            }
+            ActionStep::Push(path) => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+                let output = git::run_git_command(path, &["push"]).await?;
+                if output.stderr.is_empty() || output.stderr.contains("Everything up-to-date") {
+                    eprintln!("  {} Successfully pushed changes", "✅".green());
+                } else {
+                    eprintln!("  {} Failed to push changes", "❌".red());
+                    eprintln!("{}", output.stderr);
+                }
+                Ok(())
+            }
             ActionStep::Pull(path) => {
                 eprintln!("\n📁 {}", path.bright_cyan());
                 let output = git::run_git_command(path, &["pull"]).await?;
                 if output.stdout.contains("Already up to date.") {
-                    eprintln!("  {} Successfully pulled changes", "✅".green());
+                    eprintln!("  {} Already up to date", "✅".green());
                 } else if output.stderr.is_empty() {
                     eprintln!("  {} Changes pulled successfully", "✅".green());
                 } else {
@@ -32,49 +72,41 @@ impl ActionStep {
                 }
                 Ok(())
             }
-            ActionStep::AddCommitPush { path, has_changes } => {
-                eprintln!("\n📁 {}", path.bright_cyan());
+        }
+    }
+}
 
-                if *has_changes {
-                    let add_output = git::run_git_command(path, &["add", "."]).await?;
-                    if !add_output.stderr.is_empty() {
-                        eprintln!("  {} Failed to stage changes", "❌".red());
-                        eprintln!("{}", add_output.stderr);
-                        return Ok(());
+impl ExecutionPlan {
+    pub(crate) fn new(repo_statuses: Vec<RepoStatus>, mode: SyncMode) -> Self {
+        let mut steps = Vec::new();
+
+        for status in &repo_statuses {
+            if status.existence == Existence::Exists {
+                match (mode, &status.action) {
+                    (SyncMode::Push, RepoAction::NeedsStage) => {
+                        steps.push(ActionStep::Stage(status.path.clone()));
+                        steps.push(ActionStep::Commit(status.path.clone()));
+                        steps.push(ActionStep::Push(status.path.clone()));
                     }
-
-                    eprint!("  Enter commit message: ");
-                    io::stdout().flush().wrap_err("Failed to flush stdout")?;
-                    let mut commit_msg = String::new();
-                    io::stdin()
-                        .read_line(&mut commit_msg)
-                        .wrap_err("Failed to read input")?;
-
-                    let commit_output =
-                        git::run_git_command(path, &["commit", "-m", commit_msg.trim()]).await?;
-
-                    if !commit_output.stderr.is_empty()
-                        && !commit_output.stderr.contains("nothing to commit")
-                    {
-                        eprintln!("  {} Failed to commit changes", "❌".red());
-                        eprintln!("{}", commit_output.stderr);
-                        return Ok(());
+                    (SyncMode::Push, RepoAction::NeedsCommit) => {
+                        steps.push(ActionStep::Commit(status.path.clone()));
+                        steps.push(ActionStep::Push(status.path.clone()));
                     }
-                    eprintln!("  {} Changes committed", "✅".green());
+                    (SyncMode::Push, RepoAction::NeedsPush) => {
+                        steps.push(ActionStep::Push(status.path.clone()));
+                    }
+                    (SyncMode::Pull, RepoAction::NeedsPush) => {
+                        steps.push(ActionStep::Pull(status.path.clone()));
+                    }
+                    _ => {}
                 }
-
-                let push_output = git::run_git_command(path, &["push"]).await?;
-                if push_output.stderr.is_empty()
-                    || push_output.stderr.contains("Everything up-to-date")
-                {
-                    eprintln!("  {} Successfully pushed changes", "✅".green());
-                } else {
-                    eprintln!("  {} Failed to push changes", "❌".red());
-                    eprintln!("{}", push_output.stderr);
-                }
-
-                Ok(())
             }
+        }
+
+        ExecutionPlan {
+            steps,
+            mode,
+            repo_statuses,
         }
     }
 }
@@ -88,41 +120,6 @@ pub(crate) struct ExecutionPlan {
 impl ExecutionPlan {
     pub(crate) fn is_noop(&self) -> bool {
         self.steps.is_empty()
-    }
-}
-
-impl ExecutionPlan {
-    pub(crate) fn new(repo_statuses: Vec<RepoStatus>, mode: SyncMode) -> Self {
-        let mut steps = Vec::new();
-
-        for status in &repo_statuses {
-            if status.existence == Existence::Exists {
-                match (
-                    &mode,
-                    &status.pull_status,
-                    &status.push_status,
-                    &status.change_status,
-                ) {
-                    (SyncMode::Pull, PullStatus::NeedsPull, _, _) => {
-                        steps.push(ActionStep::Pull(status.path.clone()));
-                    }
-                    (SyncMode::Push, _, PushStatus::NeedsPush, _)
-                    | (SyncMode::Push, _, _, ChangeStatus::HasChanges) => {
-                        steps.push(ActionStep::AddCommitPush {
-                            path: status.path.clone(),
-                            has_changes: matches!(status.change_status, ChangeStatus::HasChanges),
-                        });
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        ExecutionPlan {
-            steps,
-            mode,
-            repo_statuses,
-        }
     }
 
     pub(crate) async fn execute(&self) -> eyre::Result<()> {
@@ -145,7 +142,7 @@ impl fmt::Display for ExecutionPlan {
             .bright_cyan()
         )?;
 
-        for (step, status) in self.steps.iter().zip(self.repo_statuses.iter()) {
+        for status in &self.repo_statuses {
             writeln!(f, "\n📁 {}", status.path.bright_cyan())?;
             writeln!(
                 f,
@@ -156,29 +153,43 @@ impl fmt::Display for ExecutionPlan {
             writeln!(
                 f,
                 "  Status: {}",
-                match status.change_status {
-                    ChangeStatus::HasChanges =>
-                        "Has local changes".style(Style::new().bright_red()),
-                    ChangeStatus::NoChanges =>
-                        "No local changes".style(Style::new().bright_green()),
+                match status.action {
+                    RepoAction::NeedsStage => "Needs staging".style(Style::new().bright_red()),
+                    RepoAction::NeedsCommit => "Needs commit".style(Style::new().bright_yellow()),
+                    RepoAction::NeedsPush => "Needs push".style(Style::new().bright_blue()),
+                    RepoAction::UpToDate => "Up to date".style(Style::new().bright_green()),
                 }
             )?;
 
-            match step {
-                ActionStep::Pull(_) => {
-                    writeln!(f, "  {}: git pull", "Will execute".bright_blue())?;
-                }
-                ActionStep::AddCommitPush { has_changes, .. } => {
-                    if *has_changes {
-                        writeln!(f, "  {}: git add .", "Will execute".bright_blue())?;
-                        writeln!(f, "  {}: commit message", "Will prompt for".bright_blue())?;
-                        writeln!(
-                            f,
-                            "  {}: git commit -m <message>",
-                            "Will execute".bright_blue()
-                        )?;
-                    }
+            match status.action {
+                RepoAction::NeedsStage => {
+                    writeln!(f, "  {}: git add .", "Will execute".bright_blue())?;
+                    writeln!(f, "  {}: commit message", "Will prompt for".bright_blue())?;
+                    writeln!(
+                        f,
+                        "  {}: git commit -m <message>",
+                        "Will execute".bright_blue()
+                    )?;
                     writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
+                }
+                RepoAction::NeedsCommit => {
+                    writeln!(f, "  {}: commit message", "Will prompt for".bright_blue())?;
+                    writeln!(
+                        f,
+                        "  {}: git commit -m <message>",
+                        "Will execute".bright_blue()
+                    )?;
+                    writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
+                }
+                RepoAction::NeedsPush => {
+                    writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
+                }
+                RepoAction::UpToDate => {
+                    if self.mode == SyncMode::Pull {
+                        writeln!(f, "  {}: git pull", "Will execute".bright_blue())?;
+                    } else {
+                        writeln!(f, "  {}: No action needed", "Status".bright_green())?;
+                    }
                 }
             }
         }
