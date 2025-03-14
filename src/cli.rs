@@ -50,27 +50,6 @@ pub(crate) enum Existence {
     DoesNotExist,
 }
 
-/// Indicates whether a repository has local changes
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ChangeStatus {
-    HasChanges,
-    NoChanges,
-}
-
-/// Represents the status of pulling changes from remote
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PullStatus {
-    NeedsPull,
-    UpToDate,
-}
-
-/// Represents the status of pushing changes to remote
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PushStatus {
-    NeedsPush,
-    UpToDate,
-}
-
 #[derive(Debug)]
 pub(crate) struct RepoStatus {
     pub(crate) path: Utf8PathBuf,

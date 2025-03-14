@@ -82,23 +82,23 @@ impl ExecutionPlan {
 
         for status in &repo_statuses {
             if status.existence == Existence::Exists {
-                match (mode, &status.action) {
-                    (SyncMode::Push, RepoAction::NeedsStage) => {
-                        steps.push(ActionStep::Stage(status.path.clone()));
-                        steps.push(ActionStep::Commit(status.path.clone()));
-                        steps.push(ActionStep::Push(status.path.clone()));
+                match mode {
+                    SyncMode::Push => {
+                        if status.action.needs_stage() {
+                            steps.push(ActionStep::Stage(status.path.clone()));
+                        }
+                        if status.action.needs_commit() {
+                            steps.push(ActionStep::Commit(status.path.clone()));
+                        }
+                        if status.action.needs_push() {
+                            steps.push(ActionStep::Push(status.path.clone()));
+                        }
                     }
-                    (SyncMode::Push, RepoAction::NeedsCommit) => {
-                        steps.push(ActionStep::Commit(status.path.clone()));
-                        steps.push(ActionStep::Push(status.path.clone()));
+                    SyncMode::Pull => {
+                        if status.action.needs_push() {
+                            steps.push(ActionStep::Pull(status.path.clone()));
+                        }
                     }
-                    (SyncMode::Push, RepoAction::NeedsPush) => {
-                        steps.push(ActionStep::Push(status.path.clone()));
-                    }
-                    (SyncMode::Pull, RepoAction::NeedsPush) => {
-                        steps.push(ActionStep::Pull(status.path.clone()));
-                    }
-                    _ => {}
                 }
             }
         }

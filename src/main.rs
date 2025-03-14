@@ -132,6 +132,10 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
             // 'git status --porcelain' shows a machine-parsable status output
             let status_output = git::run_git_command(path, &["status", "--porcelain"]).await?;
 
+            // Check if there are staged changes that haven't been committed
+            let staged_output =
+                git::run_git_command(path, &["diff", "--cached", "--quiet"]).await?;
+
             // Check if there are commits that haven't been pushed
             // 'git rev-list @{u}..HEAD' shows commits that are in HEAD but not in the upstream branch
             let rev_list_output = git::run_git_command(path, &["rev-list", "@{u}..HEAD"]).await?;
@@ -139,11 +143,14 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
             if !status_output.stdout.trim().is_empty() {
                 // There are unstaged changes
                 RepoAction::NeedsStage
+            } else if staged_output.status.code() == Some(1) {
+                // There are staged changes that haven't been committed
+                RepoAction::NeedsCommit
             } else if !rev_list_output.stdout.trim().is_empty() {
                 // There are commits that haven't been pushed
                 RepoAction::NeedsPush
             } else {
-                // No changes to stage or push
+                // No changes to stage, commit, or push
                 RepoAction::UpToDate
             }
         }

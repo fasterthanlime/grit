@@ -22,6 +22,7 @@ use tokio::{
 pub struct GitCommandOutput {
     pub stdout: String,
     pub stderr: String,
+    pub status: std::process::ExitStatus,
 }
 
 pub(crate) async fn run_git_command(
@@ -59,6 +60,7 @@ pub(crate) async fn run_git_command(
 
     let mut stdout_output = String::new();
     let mut stderr_output = String::new();
+    let mut status = None;
 
     loop {
         select! {
@@ -85,7 +87,7 @@ pub(crate) async fn run_git_command(
                 }
             }
             result = child.wait() => {
-                result.wrap_err("Failed to wait on git command")?;
+                status = Some(result.wrap_err("Failed to wait on git command")?);
                 break;
             }
         }
@@ -94,5 +96,6 @@ pub(crate) async fn run_git_command(
     Ok(GitCommandOutput {
         stdout: stdout_output,
         stderr: stderr_output,
+        status: status.expect("Child process should have exited"),
     })
 }
