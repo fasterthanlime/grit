@@ -45,7 +45,7 @@ async fn real_main() -> eyre::Result<()> {
 async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     let repos = read_repos_from_default_config()?;
     let repo_statuses = futures_util::stream::iter(repos.iter())
-        .map(|repo| async { get_repo_status(repo, &mode).await })
+        .map(|repo| async { get_repo_status(repo).await })
         .buffer_unordered(8)
         .filter_map(|status| async move { status.ok().flatten() })
         .collect::<Vec<_>>()
@@ -92,7 +92,7 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
 // Things that should be fatal (return an error)
 //   - the directory is not a git repo
 //   - any of the git gathering commands fail
-async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<Option<RepoStatus>> {
+async fn get_repo_status(path: &Utf8Path) -> eyre::Result<Option<RepoStatus>> {
     if !path.exists() {
         eprintln!(
             "  {} {} does not exist",
@@ -129,72 +129,54 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<Optio
     .trim()
     .to_string();
 
-    let action: Option<RepoAction> = match mode {
-        SyncMode::Push => {
-            let status_output = git::run_git_command_quiet(
-                path,
-                &["status", "--porcelain"],
-                git::GitCommandBehavior::AssertZeroExitCode,
-            )
-            .await?;
+    let status_output = git::run_git_command_quiet(
+        path,
+        &["status", "--porcelain"],
+        git::GitCommandBehavior::AssertZeroExitCode,
+    )
+    .await?;
 
-            let staged_output = git::run_git_command_quiet(
-                path,
-                &["diff", "--cached", "--quiet"],
-                git::GitCommandBehavior::AllowNonZeroExitCode,
-            )
-            .await?;
+    let staged_output = git::run_git_command_quiet(
+        path,
+        &["diff", "--cached", "--quiet"],
+        git::GitCommandBehavior::AllowNonZeroExitCode,
+    )
+    .await?;
 
-            let rev_list_output = git::run_git_command_quiet(
-                path,
-                &["rev-list", "@{u}..HEAD"],
-                git::GitCommandBehavior::AssertZeroExitCode,
-            )
-            .await?;
+    let rev_list_output = git::run_git_command_quiet(
+        path,
+        &["rev-list", "@{u}..HEAD"],
+        git::GitCommandBehavior::AssertZeroExitCode,
+    )
+    .await?;
 
-            if !status_output.stdout.trim().is_empty() {
-                Some(RepoAction::Stage)
-            } else if staged_output.status.code() == Some(1) {
-                Some(RepoAction::Commit)
-            } else if !rev_list_output.stdout.trim().is_empty() {
-                Some(RepoAction::Push)
-            } else {
-                None
-            }
-        }
-        SyncMode::Pull => {
-            let fetch_output = git::run_git_command_quiet(
-                path,
-                &["fetch", "--all"],
-                git::GitCommandBehavior::AssertZeroExitCode,
-            )
-            .await?;
+    let fetch_output = git::run_git_command_quiet(
+        path,
+        &["fetch", "--all"],
+        git::GitCommandBehavior::AssertZeroExitCode,
+    )
+    .await?;
 
-            if !fetch_output.stderr.is_empty() {
-                eprintln!("  {} Failed to fetch changes", "⚠️".yellow());
-                eprintln!("{}", fetch_output.stderr.red());
-            }
+    if !fetch_output.stderr.is_empty() {
+        eprintln!("  {} Failed to fetch changes", "⚠️".yellow());
+        eprintln!("{}", fetch_output.stderr.red());
+    }
 
-            let rev_list_output = git::run_git_command_quiet(
-                path,
-                &["rev-list", "HEAD..@{u}"],
-                git::GitCommandBehavior::AssertZeroExitCode,
-            )
-            .await?;
-
-            if rev_list_output.stdout.trim().is_empty() {
-                None
-            } else {
-                Some(RepoAction::Pull)
-            }
-        }
-    };
+    let rev_list_pull_output = git::run_git_command_quiet(
+        path,
+        &["rev-list", "HEAD..@{u}"],
+        git::GitCommandBehavior::AssertZeroExitCode,
+    )
+    .await?;
 
     Ok(Some(RepoStatus {
         path: path.to_owned(),
         branch,
         remote,
-        action,
+        has_unstaged_changes: !status_output.stdout.trim().is_empty(),
+        has_staged_changes: staged_output.status.code() == Some(1),
+        has_unpushed_commits: !rev_list_output.stdout.trim().is_empty(),
+        has_unpulled_commits: !rev_list_pull_output.stdout.trim().is_empty(),
     }))
 }
 
@@ -203,37 +185,12 @@ pub(crate) struct RepoStatus {
     pub(crate) path: Utf8PathBuf,
     pub(crate) branch: String,
     pub(crate) remote: String,
-    pub(crate) action: Option<RepoAction>,
+    pub(crate) has_unstaged_changes: bool,
+    pub(crate) has_staged_changes: bool,
+    pub(crate) has_unpushed_commits: bool,
+    pub(crate) has_unpulled_commits: bool,
 }
 
-/// Defines the mode of synchronization
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RepoAction {
-    Stage,
-    Commit,
-    Push,
-    Pull,
-}
-
-impl RepoAction {
-    pub(crate) fn needs_stage(&self) -> bool {
-        matches!(self, RepoAction::Stage)
-    }
-
-    pub(crate) fn needs_commit(&self) -> bool {
-        matches!(self, RepoAction::Stage | RepoAction::Commit)
-    }
-
-    pub(crate) fn needs_push(&self) -> bool {
-        matches!(
-            self,
-            RepoAction::Stage | RepoAction::Commit | RepoAction::Push
-        )
-    }
-}
-
-// In plan.rs, update ActionStep and ExecutionPlan
 pub(crate) enum ActionStep {
     Stage(Utf8PathBuf),
     Commit(Utf8PathBuf),
@@ -310,24 +267,23 @@ impl ExecutionPlan {
         let mut steps = Vec::new();
 
         for status in &repo_statuses {
-            let Some(action) = &status.action else {
-                continue;
-            };
-
             match mode {
                 SyncMode::Push => {
-                    if action.needs_stage() {
+                    if status.has_unstaged_changes {
                         steps.push(ActionStep::Stage(status.path.clone()));
                     }
-                    if action.needs_commit() {
+                    if status.has_staged_changes || status.has_unstaged_changes {
                         steps.push(ActionStep::Commit(status.path.clone()));
                     }
-                    if action.needs_push() {
+                    if status.has_unpushed_commits
+                        || status.has_staged_changes
+                        || status.has_unstaged_changes
+                    {
                         steps.push(ActionStep::Push(status.path.clone()));
                     }
                 }
                 SyncMode::Pull => {
-                    if action.needs_push() {
+                    if status.has_unpulled_commits {
                         steps.push(ActionStep::Pull(status.path.clone()));
                     }
                 }
@@ -381,33 +337,47 @@ impl fmt::Display for ExecutionPlan {
                 status.branch.bright_yellow(),
                 status.remote.bright_yellow()
             )?;
-            writeln!(
-                f,
-                "  Status: {}",
-                match status.action {
-                    RepoAction::Stage => "Needs staging".style(Style::new().bright_red()),
-                    RepoAction::Commit => "Needs commit".style(Style::new().bright_yellow()),
-                    RepoAction::Push => "Needs push".style(Style::new().bright_blue()),
-                    RepoAction::Pull => "Needs pull".style(Style::new().bright_magenta()),
-                }
-            )?;
 
-            match status.action {
-                RepoAction::Stage => {
-                    writeln!(f, "  {}: git add .", "Will execute".bright_blue())?;
-                    writeln!(f, "  {}: git commit", "Will execute".bright_blue())?;
-                    writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
+            let mut actions = Vec::new();
+            if status.has_unstaged_changes {
+                actions.push("Needs staging".style(Style::new().bright_red()));
+            }
+            if status.has_staged_changes {
+                actions.push("Needs commit".style(Style::new().bright_yellow()));
+            }
+            if status.has_unpushed_commits {
+                actions.push("Needs push".style(Style::new().bright_blue()));
+            }
+            if status.has_unpulled_commits {
+                actions.push("Needs pull".style(Style::new().bright_magenta()));
+            }
+
+            if !actions.is_empty() {
+                for (i, action) in actions.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", action)?;
                 }
-                RepoAction::Commit => {
-                    writeln!(f, "  {}: git commit", "Will execute".bright_blue())?;
-                    writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
-                }
-                RepoAction::Push => {
-                    writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
-                }
-                RepoAction::Pull => {
-                    writeln!(f, "  {}: git pull", "Will execute".bright_blue())?;
-                }
+                writeln!(f)?;
+            } else {
+                writeln!(f, "  Status: {}", "Up to date".green())?;
+            }
+
+            if status.has_unstaged_changes {
+                writeln!(f, "  {}: git add .", "Will execute".bright_blue())?;
+            }
+            if status.has_staged_changes || status.has_unstaged_changes {
+                writeln!(f, "  {}: git commit", "Will execute".bright_blue())?;
+            }
+            if status.has_unpushed_commits
+                || status.has_staged_changes
+                || status.has_unstaged_changes
+            {
+                writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
+            }
+            if status.has_unpulled_commits {
+                writeln!(f, "  {}: git pull", "Will execute".bright_blue())?;
             }
         }
 
