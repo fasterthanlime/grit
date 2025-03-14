@@ -8,19 +8,21 @@
 // 7. When printing specific values, like paths, numbers, keywords like "yes" and "no", use colors suited to the theme
 
 use camino::Utf8Path;
+use camino::Utf8PathBuf;
 use clap::Parser;
 use cli::{Args, Commands, RepoStatus, SyncMode};
 use config::read_repos_from_default_config;
 use eyre::Context;
 use futures_util::StreamExt;
 use owo_colors::OwoColorize;
-use plan::{ExecutionPlan, RepoAction};
+use owo_colors::Style;
+use std::fmt;
 use std::io::{self, Write};
 
+mod cheer;
 mod cli;
 mod config;
 mod git;
-mod plan;
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> eyre::Result<()> {
@@ -54,69 +56,7 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
 
     // If the plan is a no-op, we don't need to ask for consent
     if plan.is_noop() {
-        let marine_emojis = ["🐠", "🐡", "🦈", "🐙", "🦀", "🐚", "🐳", "🐬", "🦭", "🐟"];
-        let random_emoji = marine_emojis[fastrand::usize(..marine_emojis.len())];
-
-        let cheerful_messages = [
-            "Everything's shipshape and Bristol fashion!",
-            "You're on top of your game!",
-            "Smooth sailing ahead!",
-            "You're crushing it!",
-            "High five for being up-to-date!",
-            "You're a git wizard, Harry!",
-            "Code so fresh, it should be illegal!",
-            "Repo goals achieved!",
-            "You're in sync with the universe!",
-            "Git-tastic work!",
-            "You've got your ducks in a row!",
-            "Cleaner than a whistle!",
-            "Your repo game is strong!",
-            "Synced and ready to rock!",
-            "You're the captain of this ship!",
-            "Smooth as butter!",
-            "Git-er done? More like git-er already done!",
-            "You're firing on all cylinders!",
-            "Repo perfection achieved!",
-            "You're in the git zone!",
-            "Commits so clean, they sparkle!",
-            "Your repo is a thing of beauty!",
-            "Git-standing work!",
-            "You're a lean, mean, syncing machine!",
-            "Repository bliss achieved!",
-            "You're the git master!",
-            "Synced to perfection!",
-            "Your repo is a work of art!",
-            "Git-cellent job!",
-            "You're on fire (in a good way)!",
-            "Repo harmony restored!",
-            "You've got the Midas touch!",
-            "Git-tacular performance!",
-            "You're the git whisperer!",
-            "Synced and fabulous!",
-            "Your repo is a shining example!",
-            "Git-credible work!",
-            "You're in perfect harmony!",
-            "Repo nirvana achieved!",
-            "You're a git superhero!",
-            "Synced to the nines!",
-            "Your repo is poetry in motion!",
-            "Git-mazing job!",
-            "You're the king/queen of version control!",
-            "Repo zen achieved!",
-            "You've got git-game!",
-            "Synced and sensational!",
-            "Your repo is a masterpiece!",
-            "Git-errific work!",
-            "You're the git guru!",
-        ];
-
-        let message1 = cheerful_messages[fastrand::usize(..cheerful_messages.len())];
-        let message2 = cheerful_messages[fastrand::usize(..cheerful_messages.len())];
-
-        eprintln!("{}", "========================================".cyan());
-        eprintln!("{} {}", random_emoji, message1.green().bold());
-        eprintln!("{} {}", random_emoji, message2.blue());
-        eprintln!("{}", "========================================".cyan());
+        cheer::cheer();
         return Ok(());
     }
 
@@ -256,4 +196,211 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<Optio
         remote,
         action,
     }))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RepoAction {
+    Stage,
+    Commit,
+    Push,
+    Pull,
+}
+
+impl RepoAction {
+    pub(crate) fn needs_stage(&self) -> bool {
+        matches!(self, RepoAction::Stage)
+    }
+
+    pub(crate) fn needs_commit(&self) -> bool {
+        matches!(self, RepoAction::Stage | RepoAction::Commit)
+    }
+
+    pub(crate) fn needs_push(&self) -> bool {
+        matches!(
+            self,
+            RepoAction::Stage | RepoAction::Commit | RepoAction::Push
+        )
+    }
+}
+
+// In plan.rs, update ActionStep and ExecutionPlan
+pub(crate) enum ActionStep {
+    Stage(Utf8PathBuf),
+    Commit(Utf8PathBuf),
+    Push(Utf8PathBuf),
+    Pull(Utf8PathBuf),
+}
+
+impl ActionStep {
+    pub(crate) async fn execute(&self) -> eyre::Result<()> {
+        match self {
+            ActionStep::Stage(path) => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+                let output = git::assert_git_command(path, &["add", "."]).await?;
+                let status = output.status;
+                if status.success() {
+                    eprintln!("  {} Changes staged successfully", "✅".green());
+                } else {
+                    eprintln!("  {} Failed to stage changes", "❌".red());
+                    eprintln!("{}", output.stderr);
+                }
+                Ok(())
+            }
+            ActionStep::Commit(path) => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+                eprintln!("  Opening editor for commit message...");
+
+                let status = tokio::process::Command::new("git")
+                    .current_dir(path)
+                    .arg("commit")
+                    .status()
+                    .await?;
+
+                if status.success() {
+                    eprintln!("  {} Changes committed successfully", "✅".green());
+                } else {
+                    eprintln!("  {} Failed to commit changes", "❌".red());
+                }
+                Ok(())
+            }
+            ActionStep::Push(path) => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+                let output = git::assert_git_command(path, &["push"]).await?;
+                let status = output.status;
+                if status.success() {
+                    eprintln!("  {} Successfully pushed changes", "✅".green());
+                } else {
+                    eprintln!("  {} Failed to push changes", "❌".red());
+                    eprintln!("{}", output.stderr);
+                }
+                Ok(())
+            }
+            ActionStep::Pull(path) => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+                let output = git::assert_git_command(path, &["pull"]).await?;
+                let status = output.status;
+                if status.success() {
+                    if output.stdout.contains("Already up to date.") {
+                        eprintln!("  {} Already up to date", "✅".green());
+                    } else {
+                        eprintln!("  {} Changes pulled successfully", "✅".green());
+                    }
+                } else {
+                    eprintln!("  {} Failed to pull changes", "❌".red());
+                    eprintln!("{}", output.stderr);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+impl ExecutionPlan {
+    pub(crate) fn new(repo_statuses: Vec<RepoStatus>, mode: SyncMode) -> Self {
+        let mut steps = Vec::new();
+
+        for status in &repo_statuses {
+            let Some(action) = &status.action else {
+                continue;
+            };
+
+            match mode {
+                SyncMode::Push => {
+                    if action.needs_stage() {
+                        steps.push(ActionStep::Stage(status.path.clone()));
+                    }
+                    if action.needs_commit() {
+                        steps.push(ActionStep::Commit(status.path.clone()));
+                    }
+                    if action.needs_push() {
+                        steps.push(ActionStep::Push(status.path.clone()));
+                    }
+                }
+                SyncMode::Pull => {
+                    if action.needs_push() {
+                        steps.push(ActionStep::Pull(status.path.clone()));
+                    }
+                }
+            }
+        }
+
+        ExecutionPlan {
+            steps,
+            mode,
+            repo_statuses,
+        }
+    }
+}
+
+pub(crate) struct ExecutionPlan {
+    pub(crate) steps: Vec<ActionStep>,
+    pub(crate) mode: SyncMode,
+    pub(crate) repo_statuses: Vec<RepoStatus>,
+}
+
+impl ExecutionPlan {
+    pub(crate) fn is_noop(&self) -> bool {
+        self.steps.is_empty()
+    }
+
+    pub(crate) async fn execute(&self) -> eyre::Result<()> {
+        for step in &self.steps {
+            step.execute().await?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for ExecutionPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "\n{} Plan:",
+            match self.mode {
+                SyncMode::Pull => "Pull",
+                SyncMode::Push => "Push",
+            }
+            .bright_cyan()
+        )?;
+
+        for status in &self.repo_statuses {
+            writeln!(f, "\n📁 {}", status.path.bright_cyan())?;
+            writeln!(
+                f,
+                "  {} @ {}",
+                status.branch.bright_yellow(),
+                status.remote.bright_yellow()
+            )?;
+            writeln!(
+                f,
+                "  Status: {}",
+                match status.action {
+                    RepoAction::Stage => "Needs staging".style(Style::new().bright_red()),
+                    RepoAction::Commit => "Needs commit".style(Style::new().bright_yellow()),
+                    RepoAction::Push => "Needs push".style(Style::new().bright_blue()),
+                    RepoAction::Pull => "Needs pull".style(Style::new().bright_magenta()),
+                }
+            )?;
+
+            match status.action {
+                RepoAction::Stage => {
+                    writeln!(f, "  {}: git add .", "Will execute".bright_blue())?;
+                    writeln!(f, "  {}: git commit", "Will execute".bright_blue())?;
+                    writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
+                }
+                RepoAction::Commit => {
+                    writeln!(f, "  {}: git commit", "Will execute".bright_blue())?;
+                    writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
+                }
+                RepoAction::Push => {
+                    writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
+                }
+                RepoAction::Pull => {
+                    writeln!(f, "  {}: git pull", "Will execute".bright_blue())?;
+                }
+            }
+        }
+
+        Ok(())
+    }
 }
