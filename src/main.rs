@@ -1,12 +1,208 @@
+// Rules:
+// 1. Always use eprintln!(), not println!()
+// 2. Be friendly with colors and emojis but not too uppity
+// 3. FIRST come up with a plan, gathering all the data, THEN apply it
+// 4. Ask for consent before applying the plan, showing the exact commands to run
+// 5. When skipping a repo, explain why (couldn't parse git-rev, etc.)
+// 6. Better to panic if git output isn't as expected than to do harmful things
+
 use camino::{Utf8Path, Utf8PathBuf};
+use clap::Parser;
 use cli::{Args, ChangeStatus, Commands, Existence, PullStatus, PushStatus, RepoStatus, SyncMode};
 use eyre::Context;
 use owo_colors::OwoColorize;
+use std::fmt;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
 
 mod cli;
 mod git;
+
+#[derive(Debug)]
+enum ActionStep {
+    Pull(Utf8PathBuf),
+    AddCommitPush {
+        path: Utf8PathBuf,
+        has_changes: bool,
+    },
+    Skip(Utf8PathBuf, String),
+    NoAction(Utf8PathBuf),
+}
+
+impl ActionStep {
+    async fn execute(&self) -> eyre::Result<()> {
+        match self {
+            ActionStep::Pull(path) => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+                let output = git::run_git_command(path, &["pull"]).await?;
+                if output.stdout.contains("Already up to date.") {
+                    eprintln!("  {} Successfully pulled changes", "✅".green());
+                } else if output.stderr.is_empty() {
+                    eprintln!("  {} Changes pulled successfully", "✅".green());
+                } else {
+                    eprintln!("  {} Failed to pull changes", "❌".red());
+                    eprintln!("{}", output.stderr);
+                }
+                Ok(())
+            }
+            ActionStep::AddCommitPush { path, has_changes } => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+
+                if *has_changes {
+                    let add_output = git::run_git_command(path, &["add", "."]).await?;
+                    if !add_output.stderr.is_empty() {
+                        eprintln!("  {} Failed to stage changes", "❌".red());
+                        eprintln!("{}", add_output.stderr);
+                        return Ok(());
+                    }
+
+                    eprint!("  Enter commit message: ");
+                    io::stdout().flush().wrap_err("Failed to flush stdout")?;
+                    let mut commit_msg = String::new();
+                    io::stdin()
+                        .read_line(&mut commit_msg)
+                        .wrap_err("Failed to read input")?;
+
+                    let commit_output =
+                        git::run_git_command(path, &["commit", "-m", commit_msg.trim()]).await?;
+
+                    if !commit_output.stderr.is_empty()
+                        && !commit_output.stderr.contains("nothing to commit")
+                    {
+                        eprintln!("  {} Failed to commit changes", "❌".red());
+                        eprintln!("{}", commit_output.stderr);
+                        return Ok(());
+                    }
+                    eprintln!("  {} Changes committed", "✅".green());
+                }
+
+                let push_output = git::run_git_command(path, &["push"]).await?;
+                if push_output.stderr.is_empty()
+                    || push_output.stderr.contains("Everything up-to-date")
+                {
+                    eprintln!("  {} Successfully pushed changes", "✅".green());
+                } else {
+                    eprintln!("  {} Failed to push changes", "❌".red());
+                    eprintln!("{}", push_output.stderr);
+                }
+
+                Ok(())
+            }
+            ActionStep::Skip(path, reason) => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+                eprintln!("  {} {reason}", "⚠️".yellow());
+                Ok(())
+            }
+            ActionStep::NoAction(path) => {
+                eprintln!("\n📁 {}", path.bright_cyan());
+                eprintln!("  {} No action needed", "ℹ️".blue());
+                Ok(())
+            }
+        }
+    }
+}
+
+struct ExecutionPlan {
+    steps: Vec<ActionStep>,
+    mode: SyncMode,
+    repo_statuses: Vec<RepoStatus>,
+}
+
+impl ExecutionPlan {
+    fn new(repo_statuses: Vec<RepoStatus>, mode: SyncMode) -> Self {
+        let mut steps = Vec::new();
+
+        for status in &repo_statuses {
+            match status.existence {
+                Existence::DoesNotExist => {
+                    steps.push(ActionStep::Skip(
+                        status.path.clone(),
+                        "Directory does not exist or is not a git repository".to_string(),
+                    ));
+                }
+                Existence::Exists => {
+                    match (
+                        &mode,
+                        &status.pull_status,
+                        &status.push_status,
+                        &status.change_status,
+                    ) {
+                        (SyncMode::Pull, PullStatus::NeedsPull, _, _) => {
+                            steps.push(ActionStep::Pull(status.path.clone()));
+                        }
+                        (SyncMode::Push, _, PushStatus::NeedsPush, _)
+                        | (SyncMode::Push, _, _, ChangeStatus::HasChanges) => {
+                            steps.push(ActionStep::AddCommitPush {
+                                path: status.path.clone(),
+                                has_changes: matches!(
+                                    status.change_status,
+                                    ChangeStatus::HasChanges
+                                ),
+                            });
+                        }
+                        _ => {
+                            steps.push(ActionStep::NoAction(status.path.clone()));
+                        }
+                    }
+                }
+            }
+        }
+
+        ExecutionPlan {
+            steps,
+            mode,
+            repo_statuses,
+        }
+    }
+
+    async fn execute(&self) -> eyre::Result<()> {
+        for step in &self.steps {
+            step.execute().await?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Display for ExecutionPlan {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "\n{} Plan:",
+            match self.mode {
+                SyncMode::Pull => "Pull",
+                SyncMode::Push => "Push",
+            }
+        )?;
+
+        for step in &self.steps {
+            match step {
+                ActionStep::Pull(path) => {
+                    writeln!(f, "\n📁 {}", path)?;
+                    writeln!(f, "  Will execute: git pull")?;
+                }
+                ActionStep::AddCommitPush { path, has_changes } => {
+                    writeln!(f, "\n📁 {}", path)?;
+                    if *has_changes {
+                        writeln!(f, "  Will execute: git add .")?;
+                        writeln!(f, "  Will prompt for commit message")?;
+                        writeln!(f, "  Will execute: git commit -m <message>")?;
+                    }
+                    writeln!(f, "  Will execute: git push")?;
+                }
+                ActionStep::Skip(path, reason) => {
+                    writeln!(f, "\n📁 {}", path)?;
+                    writeln!(f, "  Will skip: {}", reason)?;
+                }
+                ActionStep::NoAction(path) => {
+                    writeln!(f, "\n📁 {}", path)?;
+                    writeln!(f, "  No action needed")?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> eyre::Result<()> {
@@ -45,14 +241,20 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     let repos = read_repos()?;
     let mut repo_statuses = Vec::new();
 
-    for repo in repos {
-        let status = get_repo_status(&repo, &mode).await?;
+    for repo in &repos {
+        let status = get_repo_status(repo, &mode).await?;
         repo_statuses.push(status);
     }
 
-    print_summary(&repo_statuses, &mode);
+    // First, create the plan from all gathered data
+    let plan = ExecutionPlan::new(repo_statuses, mode);
 
-    print!("\nDo you want to proceed? Type 'yes' to continue: ");
+    // Display the summary and plan
+    print_summary(&plan);
+    eprintln!("{plan}");
+
+    // Ask for consent before applying the plan
+    eprint!("\nDo you want to proceed? Type 'yes' to continue: ");
     io::stdout().flush().wrap_err("Failed to flush stdout")?;
 
     let mut input = String::new();
@@ -61,22 +263,34 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
         .wrap_err("Failed to read input")?;
 
     if input.trim() != "yes" {
-        println!("Operation cancelled.");
+        eprintln!("Operation cancelled.");
         return Ok(());
     }
 
-    execute_plan(&repo_statuses, &mode).await?;
-    print_final_summary(&repo_statuses, &mode);
+    // Execute the plan
+    plan.execute().await?;
+
+    // Print final summary
+    print_final_summary(&plan);
 
     Ok(())
 }
 
 async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoStatus> {
     let existence = if path.exists() {
-        Existence::Exists
+        if path.join(".git").is_dir() {
+            Existence::Exists
+        } else {
+            eprintln!(
+                "  {} Directory exists but is not a git repository",
+                "⚠️".yellow()
+            );
+            Existence::DoesNotExist
+        }
     } else {
         Existence::DoesNotExist
     };
+
     let branch = match existence {
         Existence::Exists => {
             let output = git::run_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
@@ -84,6 +298,7 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
         }
         Existence::DoesNotExist => String::new(),
     };
+
     let remote = match existence {
         Existence::Exists => {
             let output = git::run_git_command(path, &["remote", "get-url", "origin"]).await?;
@@ -91,6 +306,7 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
         }
         Existence::DoesNotExist => String::new(),
     };
+
     let change_status = match existence {
         Existence::Exists => {
             let output = git::run_git_command(path, &["status", "--porcelain"]).await?;
@@ -102,6 +318,7 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
         }
         Existence::DoesNotExist => ChangeStatus::NoChanges,
     };
+
     let pull_status = match (mode, existence) {
         (SyncMode::Pull, Existence::Exists) => {
             let output = git::run_git_command(path, &["rev-list", "HEAD..@{u}"]).await?;
@@ -113,6 +330,7 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
         }
         _ => PullStatus::UpToDate,
     };
+
     let push_status = match (mode, existence) {
         (SyncMode::Push, Existence::Exists) => {
             let output = git::run_git_command(path, &["rev-list", "@{u}..HEAD"]).await?;
@@ -136,134 +354,75 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
     })
 }
 
-fn print_summary(repo_statuses: &[RepoStatus], mode: &SyncMode) {
-    println!(
+fn print_summary(plan: &ExecutionPlan) {
+    eprintln!(
         "\n{} Summary:",
-        match mode {
+        match plan.mode {
             SyncMode::Pull => "Pull",
             SyncMode::Push => "Push",
         }
     );
-    for status in repo_statuses {
-        println!("\n📁 {}", status.path.bright_cyan());
+
+    for status in &plan.repo_statuses {
+        eprintln!("\n📁 {}", status.path.bright_cyan());
+
         match status.existence {
             Existence::DoesNotExist => {
-                println!("  {} Directory does not exist", "⚠️".yellow());
+                eprintln!(
+                    "  {} Directory does not exist or is not a git repository",
+                    "⚠️".yellow()
+                );
                 continue;
             }
             Existence::Exists => {}
         }
-        println!("  Branch: {}", status.branch.bright_magenta());
-        println!("  Remote: {}", status.remote.bright_blue());
+
+        eprintln!("  Branch: {}", status.branch.bright_magenta());
+        eprintln!("  Remote: {}", status.remote.bright_blue());
+
         if status.branch != "main" && status.branch != "master" {
-            println!("  {} Not on main branch", "⚠️".yellow());
+            eprintln!("  {} Not on main branch", "⚠️".yellow());
         }
+
         match status.change_status {
-            ChangeStatus::HasChanges => println!("  {} Local changes detected", "📝".yellow()),
+            ChangeStatus::HasChanges => eprintln!("  {} Local changes detected", "📝".yellow()),
             ChangeStatus::NoChanges => {}
         }
-        match (mode, &status.pull_status, &status.push_status) {
+
+        match (plan.mode, &status.pull_status, &status.push_status) {
             (SyncMode::Pull, PullStatus::NeedsPull, _) => {
-                println!("  {} Changes to pull", "⬇️".green())
+                eprintln!("  {} Changes to pull", "⬇️".green())
             }
             (SyncMode::Push, _, PushStatus::NeedsPush) => {
-                println!("  {} Changes to push", "⬆️".green())
+                eprintln!("  {} Changes to push", "⬆️".green())
             }
-            _ => println!("  {} Up to date", "✅".green()),
+            _ => eprintln!("  {} Up to date", "✅".green()),
         }
     }
 }
 
-async fn execute_plan(repo_statuses: &[RepoStatus], mode: &SyncMode) -> eyre::Result<()> {
-    for status in repo_statuses {
-        match status.existence {
-            Existence::DoesNotExist => continue,
-            Existence::Exists => {}
-        }
-
-        println!("\n📁 {}", status.path.bright_cyan());
-
-        match (
-            mode,
-            &status.pull_status,
-            &status.push_status,
-            &status.change_status,
-        ) {
-            (SyncMode::Pull, PullStatus::NeedsPull, _, _) => {
-                let output = git::run_git_command(&status.path, &["pull"]).await?;
-                if output.stdout.contains("Already up to date.") {
-                    println!("  {} Successfully pulled changes", "✅".green());
-                } else {
-                    println!("  {} Failed to pull changes", "❌".red());
-                    println!("{}", output.stderr);
-                }
-            }
-            (SyncMode::Push, _, PushStatus::NeedsPush, _)
-            | (SyncMode::Push, _, _, ChangeStatus::HasChanges) => {
-                match status.change_status {
-                    ChangeStatus::HasChanges => {
-                        let add_output = git::run_git_command(&status.path, &["add", "."]).await?;
-                        if !add_output.stderr.is_empty() {
-                            println!("  {} Failed to stage changes", "❌".red());
-                            println!("{}", add_output.stderr);
-                            continue;
-                        }
-
-                        print!("  Enter commit message: ");
-                        io::stdout().flush().unwrap();
-                        let mut commit_msg = String::new();
-                        io::stdin().read_line(&mut commit_msg).unwrap();
-
-                        let commit_output = git::run_git_command(
-                            &status.path,
-                            &["commit", "-m", commit_msg.trim()],
-                        )
-                        .await?;
-                        if !commit_output.stderr.is_empty() {
-                            println!("  {} Failed to commit changes", "❌".red());
-                            println!("{}", commit_output.stderr);
-                            continue;
-                        }
-                        println!("  {} Changes committed", "✅".green());
-                    }
-                    ChangeStatus::NoChanges => {}
-                }
-
-                let push_output = git::run_git_command(&status.path, &["push"]).await?;
-                if push_output.stderr.is_empty() {
-                    println!("  {} Successfully pushed changes", "✅".green());
-                } else {
-                    println!("  {} Failed to push changes", "❌".red());
-                    println!("{}", push_output.stderr);
-                }
-            }
-            _ => {
-                println!("  {} No action needed", "ℹ️".blue());
-            }
-        }
-    }
-    Ok(())
-}
-
-fn print_final_summary(repo_statuses: &[RepoStatus], mode: &SyncMode) {
-    println!(
+fn print_final_summary(plan: &ExecutionPlan) {
+    eprintln!(
         "\n{} Final Summary:",
-        match mode {
+        match plan.mode {
             SyncMode::Pull => "Pull",
             SyncMode::Push => "Push",
         }
     );
-    for status in repo_statuses {
+
+    for status in &plan.repo_statuses {
         match status.existence {
             Existence::DoesNotExist => continue,
             Existence::Exists => {}
         }
-        println!("\n📁 {}", status.path.bright_cyan());
-        println!("  Branch: {}", status.branch.bright_magenta());
-        println!("  Remote: {}", status.remote.bright_blue());
-        match mode {
+
+        eprintln!("\n📁 {}", status.path.bright_cyan());
+        eprintln!("  Branch: {}", status.branch.bright_magenta());
+        eprintln!("  Remote: {}", status.remote.bright_blue());
+
+        match plan.mode {
             SyncMode::Pull => {
-                println!(
+                eprintln!(
                     "  {} {}",
                     match status.pull_status {
                         PullStatus::NeedsPull => "⬇️",
@@ -276,7 +435,7 @@ fn print_final_summary(repo_statuses: &[RepoStatus], mode: &SyncMode) {
                 );
             }
             SyncMode::Push => {
-                println!(
+                eprintln!(
                     "  {} {}",
                     match (&status.push_status, &status.change_status) {
                         (PushStatus::NeedsPush, _) | (_, ChangeStatus::HasChanges) => "⬆️",
