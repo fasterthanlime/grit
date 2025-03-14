@@ -112,7 +112,8 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
 
     let branch = match existence {
         Existence::Exists => {
-            let output = git::run_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
+            let output =
+                git::assert_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
             output.stdout.trim().to_string()
         }
         Existence::DoesNotExist => String::new(),
@@ -120,7 +121,7 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
 
     let remote = match existence {
         Existence::Exists => {
-            let output = git::run_git_command(path, &["remote", "get-url", "origin"]).await?;
+            let output = git::assert_git_command(path, &["remote", "get-url", "origin"]).await?;
             output.stdout.trim().to_string()
         }
         Existence::DoesNotExist => String::new(),
@@ -130,15 +131,16 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
         (SyncMode::Push, Existence::Exists) => {
             // Check if there are unstaged changes
             // 'git status --porcelain' shows a machine-parsable status output
-            let status_output = git::run_git_command(path, &["status", "--porcelain"]).await?;
+            let status_output = git::assert_git_command(path, &["status", "--porcelain"]).await?;
 
             // Check if there are staged changes that haven't been committed
             let staged_output =
-                git::run_git_command(path, &["diff", "--cached", "--quiet"]).await?;
+                git::run_git_command_allow_failure(path, &["diff", "--cached", "--quiet"]).await?;
 
             // Check if there are commits that haven't been pushed
             // 'git rev-list @{u}..HEAD' shows commits that are in HEAD but not in the upstream branch
-            let rev_list_output = git::run_git_command(path, &["rev-list", "@{u}..HEAD"]).await?;
+            let rev_list_output =
+                git::assert_git_command(path, &["rev-list", "@{u}..HEAD"]).await?;
 
             if !status_output.stdout.trim().is_empty() {
                 // There are unstaged changes
@@ -155,13 +157,14 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
             }
         }
         (SyncMode::Pull, Existence::Exists) => {
-            let fetch_output = git::run_git_command(path, &["fetch", "--all"]).await?;
+            let fetch_output = git::assert_git_command(path, &["fetch", "--all"]).await?;
             if !fetch_output.stderr.is_empty() {
                 eprintln!("  {} Failed to fetch changes", "⚠️".yellow());
                 eprintln!("{}", fetch_output.stderr);
             }
 
-            let rev_list_output = git::run_git_command(path, &["rev-list", "HEAD..@{u}"]).await?;
+            let rev_list_output =
+                git::assert_git_command(path, &["rev-list", "HEAD..@{u}"]).await?;
             if rev_list_output.stdout.trim().is_empty() {
                 RepoAction::UpToDate
             } else {

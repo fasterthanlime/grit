@@ -20,7 +20,7 @@ impl ActionStep {
         match self {
             ActionStep::Stage(path) => {
                 eprintln!("\n📁 {}", path.bright_cyan());
-                let output = git::run_git_command(path, &["add", "."]).await?;
+                let output = git::assert_git_command(path, &["add", "."]).await?;
                 if output.stderr.is_empty() {
                     eprintln!("  {} Changes staged successfully", "✅".green());
                 } else {
@@ -39,7 +39,7 @@ impl ActionStep {
                     .wrap_err("Failed to read input")?;
 
                 let output =
-                    git::run_git_command(path, &["commit", "-m", commit_msg.trim()]).await?;
+                    git::assert_git_command(path, &["commit", "-m", commit_msg.trim()]).await?;
                 if output.stderr.is_empty() || output.stderr.contains("nothing to commit") {
                     eprintln!("  {} Changes committed successfully", "✅".green());
                 } else {
@@ -50,7 +50,7 @@ impl ActionStep {
             }
             ActionStep::Push(path) => {
                 eprintln!("\n📁 {}", path.bright_cyan());
-                let output = git::run_git_command(path, &["push"]).await?;
+                let output = git::assert_git_command(path, &["push"]).await?;
                 if output.stderr.is_empty() || output.stderr.contains("Everything up-to-date") {
                     eprintln!("  {} Successfully pushed changes", "✅".green());
                 } else {
@@ -61,7 +61,7 @@ impl ActionStep {
             }
             ActionStep::Pull(path) => {
                 eprintln!("\n📁 {}", path.bright_cyan());
-                let output = git::run_git_command(path, &["pull"]).await?;
+                let output = git::assert_git_command(path, &["pull"]).await?;
                 if output.stdout.contains("Already up to date.") {
                     eprintln!("  {} Already up to date", "✅".green());
                 } else if output.stderr.is_empty() {

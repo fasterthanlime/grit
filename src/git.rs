@@ -15,7 +15,6 @@ use owo_colors::OwoColorize;
 use tokio::{
     io::{AsyncBufReadExt, BufReader},
     process::Command,
-    select,
 };
 
 #[derive(Debug)]
@@ -25,9 +24,16 @@ pub struct GitCommandOutput {
     pub status: std::process::ExitStatus,
 }
 
+#[derive(Debug)]
+pub enum GitCommandBehavior {
+    AssertZeroExitCode,
+    AllowNonZeroExitCode,
+}
+
 pub(crate) async fn run_git_command(
     path: &Utf8Path,
     args: &[&str],
+    behavior: GitCommandBehavior,
 ) -> eyre::Result<GitCommandOutput> {
     let mut cmd = Command::new("git");
     cmd.current_dir(path).args(args);
@@ -37,7 +43,7 @@ pub(crate) async fn run_git_command(
         "🚀 Running: {} {} {}",
         "git".bright_green(),
         args.join(" ").bright_cyan(),
-        format!("(in {})", path).bright_blue()
+        format!("(in {path})").bright_blue()
     );
 
     let mut child = cmd
@@ -55,47 +61,63 @@ pub(crate) async fn run_git_command(
         .take()
         .ok_or_else(|| eyre::eyre!("Failed to open stderr"))?;
 
-    let mut stdout_reader = BufReader::new(stdout).lines();
-    let mut stderr_reader = BufReader::new(stderr).lines();
+    let stdout_reader = BufReader::new(stdout).lines();
+    let stderr_reader = BufReader::new(stderr).lines();
 
     let mut stdout_output = String::new();
     let mut stderr_output = String::new();
-    let mut status = None;
 
-    loop {
-        select! {
-            line = stdout_reader.next_line() => {
-                match line {
-                    Ok(Some(l)) => {
-                        eprintln!("  {}", l.bright_green());
-                        stdout_output.push_str(&l);
-                        stdout_output.push('\n');
-                    },
-                    Ok(None) => break,
-                    Err(e) => return Err(eyre::eyre!("Error reading stdout: {}", e.to_string().red())),
-                }
-            }
-            line = stderr_reader.next_line() => {
-                match line {
-                    Ok(Some(l)) => {
-                        eprintln!("  {}", l.yellow());
-                        stderr_output.push_str(&l);
-                        stderr_output.push('\n');
-                    },
-                    Ok(None) => break,
-                    Err(e) => return Err(eyre::eyre!("Error reading stderr: {}", e.to_string().red())),
-                }
-            }
-            result = child.wait() => {
-                status = Some(result.wrap_err("Failed to wait on git command")?);
-                break;
-            }
+    let stdout_future = async {
+        let mut reader = stdout_reader;
+        while let Ok(Some(line)) = reader.next_line().await {
+            eprintln!("  {}", line.bright_green());
+            stdout_output.push_str(&line);
+            stdout_output.push('\n');
         }
-    }
+    };
 
-    Ok(GitCommandOutput {
+    let stderr_future = async {
+        let mut reader = stderr_reader;
+        while let Ok(Some(line)) = reader.next_line().await {
+            eprintln!("  {}", line.yellow());
+            stderr_output.push_str(&line);
+            stderr_output.push('\n');
+        }
+    };
+
+    let wait_future = child.wait();
+
+    let ((), (), result) = tokio::join!(stdout_future, stderr_future, wait_future);
+    let status = result.wrap_err("Failed to wait on git command")?;
+
+    let output = GitCommandOutput {
         stdout: stdout_output,
         stderr: stderr_output,
-        status: status.expect("Child process should have exited"),
-    })
+        status,
+    };
+
+    match behavior {
+        GitCommandBehavior::AssertZeroExitCode => {
+            if !output.status.success() {
+                return Err(eyre::eyre!("Git command failed with non-zero exit code"));
+            }
+        }
+        GitCommandBehavior::AllowNonZeroExitCode => {}
+    }
+
+    Ok(output)
+}
+
+pub(crate) async fn assert_git_command(
+    path: &Utf8Path,
+    args: &[&str],
+) -> eyre::Result<GitCommandOutput> {
+    run_git_command(path, args, GitCommandBehavior::AssertZeroExitCode).await
+}
+
+pub(crate) async fn run_git_command_allow_failure(
+    path: &Utf8Path,
+    args: &[&str],
+) -> eyre::Result<GitCommandOutput> {
+    run_git_command(path, args, GitCommandBehavior::AllowNonZeroExitCode).await
 }
