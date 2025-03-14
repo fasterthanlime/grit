@@ -56,12 +56,16 @@ impl ActionStep {
                 eprintln!("\n📁 {}", path.bright_cyan());
                 eprintln!("  Opening editor for commit message...");
 
-                let output = git::assert_git_command(path, &["commit"]).await?;
-                if output.stderr.is_empty() || output.stderr.contains("nothing to commit") {
+                let status = tokio::process::Command::new("git")
+                    .current_dir(path)
+                    .arg("commit")
+                    .status()
+                    .await?;
+
+                if status.success() {
                     eprintln!("  {} Changes committed successfully", "✅".green());
                 } else {
                     eprintln!("  {} Failed to commit changes", "❌".red());
-                    eprintln!("{}", output.stderr);
                 }
                 Ok(())
             }
@@ -183,12 +187,7 @@ impl fmt::Display for ExecutionPlan {
                     writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
                 }
                 RepoAction::Commit => {
-                    writeln!(f, "  {}: commit message", "Will prompt for".bright_blue())?;
-                    writeln!(
-                        f,
-                        "  {}: git commit -m <message>",
-                        "Will execute".bright_blue()
-                    )?;
+                    writeln!(f, "  {}: git commit", "Will execute".bright_blue())?;
                     writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
                 }
                 RepoAction::Push => {
