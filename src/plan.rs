@@ -56,15 +56,9 @@ impl ActionStep {
             }
             ActionStep::Commit(path) => {
                 eprintln!("\n📁 {}", path.bright_cyan());
-                eprint!("  Enter commit message: ");
-                io::stdout().flush().wrap_err("Failed to flush stdout")?;
-                let mut commit_msg = String::new();
-                io::stdin()
-                    .read_line(&mut commit_msg)
-                    .wrap_err("Failed to read input")?;
+                eprintln!("  Opening editor for commit message...");
 
-                let output =
-                    git::assert_git_command(path, &["commit", "-m", commit_msg.trim()]).await?;
+                let output = git::assert_git_command(path, &["commit"]).await?;
                 if output.stderr.is_empty() || output.stderr.contains("nothing to commit") {
                     eprintln!("  {} Changes committed successfully", "✅".green());
                 } else {
@@ -187,12 +181,7 @@ impl fmt::Display for ExecutionPlan {
             match status.action {
                 RepoAction::Stage => {
                     writeln!(f, "  {}: git add .", "Will execute".bright_blue())?;
-                    writeln!(f, "  {}: commit message", "Will prompt for".bright_blue())?;
-                    writeln!(
-                        f,
-                        "  {}: git commit -m <message>",
-                        "Will execute".bright_blue()
-                    )?;
+                    writeln!(f, "  {}: git commit", "Will execute".bright_blue())?;
                     writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
                 }
                 RepoAction::Commit => {
