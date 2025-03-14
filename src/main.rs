@@ -307,11 +307,20 @@ impl fmt::Display for ExecutionPlan {
 
         for repo_plan in &self.repo_plans {
             let status = &repo_plan.status;
+            let display_path = if let Some(home_dir) = dirs::home_dir() {
+                status
+                    .path
+                    .strip_prefix(&home_dir)
+                    .map(|p| Utf8PathBuf::from("~").join(p))
+                    .unwrap_or_else(|_| status.path.clone())
+            } else {
+                status.path.clone()
+            };
             writeln!(
                 f,
                 "📁 {} {} @ {}",
-                status.path.bright_cyan(),
-                status.branch.bright_yellow(),
+                display_path.bright_cyan(),
+                status.branch.bright_green(),
                 status.remote.bright_yellow()
             )?;
 
