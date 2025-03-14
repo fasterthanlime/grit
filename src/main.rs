@@ -12,6 +12,7 @@ use clap::Parser;
 use cli::{Args, Commands, RepoStatus, SyncMode};
 use config::read_repos_from_default_config;
 use eyre::Context;
+use futures_util::StreamExt;
 use owo_colors::OwoColorize;
 use plan::{ExecutionPlan, RepoAction};
 use std::io::{self, Write};
@@ -41,13 +42,12 @@ async fn real_main() -> eyre::Result<()> {
 
 async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     let repos = read_repos_from_default_config()?;
-    let mut repo_statuses = Vec::new();
-
-    for repo in &repos {
-        if let Some(status) = get_repo_status(repo, &mode).await {
-            repo_statuses.push(status);
-        }
-    }
+    let repo_statuses = futures_util::stream::iter(repos.iter())
+        .map(|repo| async { get_repo_status(repo, &mode).await })
+        .buffer_unordered(8)
+        .filter_map(|status| async move { status })
+        .collect::<Vec<_>>()
+        .await;
 
     // First, create the plan from all gathered data
     let plan = ExecutionPlan::new(repo_statuses, mode);
