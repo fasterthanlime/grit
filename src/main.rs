@@ -54,14 +54,14 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     // First, create the plan from all gathered data
     let plan = ExecutionPlan::new(repo_statuses, mode);
 
+    // Display the summary and plan
+    eprintln!("{plan}");
+
     // If the plan is a no-op, we don't need to ask for consent
     if plan.is_noop() {
         cheer::cheer();
         return Ok(());
     }
-
-    // Display the summary and plan
-    eprintln!("{plan}");
 
     // Ask for consent before applying the plan
     eprint!(
@@ -191,127 +191,85 @@ pub(crate) struct RepoStatus {
     pub(crate) has_unpulled_commits: bool,
 }
 
-pub(crate) enum ActionStep {
-    Stage(Utf8PathBuf),
-    Commit(Utf8PathBuf),
-    Push(Utf8PathBuf),
-    Pull(Utf8PathBuf),
+pub(crate) struct ExecutionPlan {
+    pub(crate) repo_plans: Vec<RepoPlan>,
+    pub(crate) mode: SyncMode,
 }
 
-impl ActionStep {
-    pub(crate) async fn execute(&self) -> eyre::Result<()> {
-        match self {
-            ActionStep::Stage(path) => {
-                eprintln!("\n📁 {}", path.bright_cyan());
-                let output = git::assert_git_command(path, &["add", "."]).await?;
-                let status = output.status;
-                if status.success() {
-                    eprintln!("  {} Changes staged successfully", "✅".green());
-                } else {
-                    eprintln!("  {} Failed to stage changes", "❌".red());
-                    eprintln!("{}", output.stderr);
-                }
-                Ok(())
-            }
-            ActionStep::Commit(path) => {
-                eprintln!("\n📁 {}", path.bright_cyan());
-                eprintln!("  Opening editor for commit message...");
+pub(crate) struct RepoPlan {
+    pub(crate) status: RepoStatus,
+    pub(crate) steps: Vec<ActionStep>,
+}
 
-                let status = tokio::process::Command::new("git")
-                    .current_dir(path)
-                    .arg("commit")
-                    .status()
-                    .await?;
-
-                if status.success() {
-                    eprintln!("  {} Changes committed successfully", "✅".green());
-                } else {
-                    eprintln!("  {} Failed to commit changes", "❌".red());
-                }
-                Ok(())
-            }
-            ActionStep::Push(path) => {
-                eprintln!("\n📁 {}", path.bright_cyan());
-                let output = git::assert_git_command(path, &["push"]).await?;
-                let status = output.status;
-                if status.success() {
-                    eprintln!("  {} Successfully pushed changes", "✅".green());
-                } else {
-                    eprintln!("  {} Failed to push changes", "❌".red());
-                    eprintln!("{}", output.stderr);
-                }
-                Ok(())
-            }
-            ActionStep::Pull(path) => {
-                eprintln!("\n📁 {}", path.bright_cyan());
-                let output = git::assert_git_command(path, &["pull"]).await?;
-                let status = output.status;
-                if status.success() {
-                    if output.stdout.contains("Already up to date.") {
-                        eprintln!("  {} Already up to date", "✅".green());
-                    } else {
-                        eprintln!("  {} Changes pulled successfully", "✅".green());
-                    }
-                } else {
-                    eprintln!("  {} Failed to pull changes", "❌".red());
-                    eprintln!("{}", output.stderr);
-                }
-                Ok(())
-            }
-        }
-    }
+pub(crate) enum ActionStep {
+    Stage,
+    Commit,
+    Push,
+    Pull,
 }
 
 impl ExecutionPlan {
     pub(crate) fn new(repo_statuses: Vec<RepoStatus>, mode: SyncMode) -> Self {
-        let mut steps = Vec::new();
-
-        for status in &repo_statuses {
-            match mode {
-                SyncMode::Push => {
-                    if status.has_unstaged_changes {
-                        steps.push(ActionStep::Stage(status.path.clone()));
+        let repo_plans = repo_statuses
+            .into_iter()
+            .map(|status| {
+                let mut steps = Vec::new();
+                match mode {
+                    SyncMode::Push => {
+                        if status.has_unstaged_changes {
+                            steps.push(ActionStep::Stage);
+                        }
+                        if status.has_staged_changes || status.has_unstaged_changes {
+                            steps.push(ActionStep::Commit);
+                        }
+                        if status.has_unpushed_commits
+                            || status.has_staged_changes
+                            || status.has_unstaged_changes
+                        {
+                            steps.push(ActionStep::Push);
+                        }
                     }
-                    if status.has_staged_changes || status.has_unstaged_changes {
-                        steps.push(ActionStep::Commit(status.path.clone()));
-                    }
-                    if status.has_unpushed_commits
-                        || status.has_staged_changes
-                        || status.has_unstaged_changes
-                    {
-                        steps.push(ActionStep::Push(status.path.clone()));
+                    SyncMode::Pull => {
+                        if status.has_unpulled_commits {
+                            steps.push(ActionStep::Pull);
+                        }
                     }
                 }
-                SyncMode::Pull => {
-                    if status.has_unpulled_commits {
-                        steps.push(ActionStep::Pull(status.path.clone()));
-                    }
-                }
-            }
-        }
+                RepoPlan { status, steps }
+            })
+            .collect();
 
-        ExecutionPlan {
-            steps,
-            mode,
-            repo_statuses,
-        }
+        ExecutionPlan { repo_plans, mode }
     }
-}
-
-pub(crate) struct ExecutionPlan {
-    pub(crate) steps: Vec<ActionStep>,
-    pub(crate) mode: SyncMode,
-    pub(crate) repo_statuses: Vec<RepoStatus>,
 }
 
 impl ExecutionPlan {
     pub(crate) fn is_noop(&self) -> bool {
-        self.steps.is_empty()
+        self.repo_plans.iter().all(|plan| plan.steps.is_empty())
     }
 
     pub(crate) async fn execute(&self) -> eyre::Result<()> {
-        for step in &self.steps {
-            step.execute().await?;
+        for repo_plan in &self.repo_plans {
+            for step in &repo_plan.steps {
+                match step {
+                    ActionStep::Stage => {
+                        git::assert_git_command(&repo_plan.status.path, &["add", "."]).await?;
+                    }
+                    ActionStep::Commit => {
+                        tokio::process::Command::new("git")
+                            .current_dir(&repo_plan.status.path)
+                            .arg("commit")
+                            .status()
+                            .await?;
+                    }
+                    ActionStep::Push => {
+                        git::assert_git_command(&repo_plan.status.path, &["push"]).await?;
+                    }
+                    ActionStep::Pull => {
+                        git::assert_git_command(&repo_plan.status.path, &["pull"]).await?;
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -329,11 +287,12 @@ impl fmt::Display for ExecutionPlan {
             .bright_cyan()
         )?;
 
-        for status in &self.repo_statuses {
-            writeln!(f, "\n📁 {}", status.path.bright_cyan())?;
+        for repo_plan in &self.repo_plans {
+            let status = &repo_plan.status;
             writeln!(
                 f,
-                "  {} @ {}",
+                "📁 {} {} @ {}",
+                status.path.bright_cyan(),
                 status.branch.bright_yellow(),
                 status.remote.bright_yellow()
             )?;
@@ -360,24 +319,23 @@ impl fmt::Display for ExecutionPlan {
                     write!(f, "{}", action)?;
                 }
                 writeln!(f)?;
-            } else {
-                writeln!(f, "  Status: {}", "Up to date".green())?;
             }
 
-            if status.has_unstaged_changes {
-                writeln!(f, "  {}: git add .", "Will execute".bright_blue())?;
-            }
-            if status.has_staged_changes || status.has_unstaged_changes {
-                writeln!(f, "  {}: git commit", "Will execute".bright_blue())?;
-            }
-            if status.has_unpushed_commits
-                || status.has_staged_changes
-                || status.has_unstaged_changes
-            {
-                writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
-            }
-            if status.has_unpulled_commits {
-                writeln!(f, "  {}: git pull", "Will execute".bright_blue())?;
+            for step in &repo_plan.steps {
+                match step {
+                    ActionStep::Stage => {
+                        writeln!(f, "  {}: git add .", "Will execute".bright_blue())?
+                    }
+                    ActionStep::Commit => {
+                        writeln!(f, "  {}: git commit", "Will execute".bright_blue())?
+                    }
+                    ActionStep::Push => {
+                        writeln!(f, "  {}: git push", "Will execute".bright_blue())?
+                    }
+                    ActionStep::Pull => {
+                        writeln!(f, "  {}: git pull", "Will execute".bright_blue())?
+                    }
+                }
             }
         }
 
