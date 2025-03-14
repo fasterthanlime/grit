@@ -44,7 +44,8 @@ impl ActionStep {
             ActionStep::Stage(path) => {
                 eprintln!("\n📁 {}", path.bright_cyan());
                 let output = git::assert_git_command(path, &["add", "."]).await?;
-                if output.stderr.is_empty() {
+                let status = output.status;
+                if status.success() {
                     eprintln!("  {} Changes staged successfully", "✅".green());
                 } else {
                     eprintln!("  {} Failed to stage changes", "❌".red());
@@ -72,7 +73,8 @@ impl ActionStep {
             ActionStep::Push(path) => {
                 eprintln!("\n📁 {}", path.bright_cyan());
                 let output = git::assert_git_command(path, &["push"]).await?;
-                if output.stderr.is_empty() || output.stderr.contains("Everything up-to-date") {
+                let status = output.status;
+                if status.success() {
                     eprintln!("  {} Successfully pushed changes", "✅".green());
                 } else {
                     eprintln!("  {} Failed to push changes", "❌".red());
@@ -83,10 +85,13 @@ impl ActionStep {
             ActionStep::Pull(path) => {
                 eprintln!("\n📁 {}", path.bright_cyan());
                 let output = git::assert_git_command(path, &["pull"]).await?;
-                if output.stdout.contains("Already up to date.") {
-                    eprintln!("  {} Already up to date", "✅".green());
-                } else if output.stderr.is_empty() {
-                    eprintln!("  {} Changes pulled successfully", "✅".green());
+                let status = output.status;
+                if status.success() {
+                    if output.stdout.contains("Already up to date.") {
+                        eprintln!("  {} Already up to date", "✅".green());
+                    } else {
+                        eprintln!("  {} Changes pulled successfully", "✅".green());
+                    }
                 } else {
                     eprintln!("  {} Failed to pull changes", "❌".red());
                     eprintln!("{}", output.stderr);
