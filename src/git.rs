@@ -30,21 +30,30 @@ pub enum GitCommandBehavior {
     AllowNonZeroExitCode,
 }
 
+#[derive(Debug)]
+pub enum GitCommandVerbosity {
+    Verbose,
+    Quiet,
+}
+
 pub(crate) async fn run_git_command(
     path: &Utf8Path,
     args: &[&str],
     behavior: GitCommandBehavior,
+    verbosity: GitCommandVerbosity,
 ) -> eyre::Result<GitCommandOutput> {
     let mut cmd = Command::new("git");
     cmd.current_dir(path).args(args);
 
-    // Print the full git command
-    eprintln!(
-        "🚀 Running: {} {} {}",
-        "git".bright_green(),
-        args.join(" ").bright_cyan(),
-        format!("(in {path})").bright_blue()
-    );
+    if let GitCommandVerbosity::Verbose = verbosity {
+        // Print the full git command
+        eprintln!(
+            "🚀 Running: {} {} {}",
+            "git".bright_green(),
+            args.join(" ").bright_cyan(),
+            format!("(in {path})").bright_blue()
+        );
+    }
 
     let mut child = cmd
         .stdout(Stdio::piped())
@@ -70,7 +79,9 @@ pub(crate) async fn run_git_command(
     let stdout_future = async {
         let mut reader = stdout_reader;
         while let Ok(Some(line)) = reader.next_line().await {
-            eprintln!("  {}", line.bright_green());
+            if let GitCommandVerbosity::Verbose = verbosity {
+                eprintln!("  {}", line.bright_green());
+            }
             stdout_output.push_str(&line);
             stdout_output.push('\n');
         }
@@ -79,7 +90,9 @@ pub(crate) async fn run_git_command(
     let stderr_future = async {
         let mut reader = stderr_reader;
         while let Ok(Some(line)) = reader.next_line().await {
-            eprintln!("  {}", line.yellow());
+            if let GitCommandVerbosity::Verbose = verbosity {
+                eprintln!("  {}", line.yellow());
+            }
             stderr_output.push_str(&line);
             stderr_output.push('\n');
         }
@@ -112,12 +125,19 @@ pub(crate) async fn assert_git_command(
     path: &Utf8Path,
     args: &[&str],
 ) -> eyre::Result<GitCommandOutput> {
-    run_git_command(path, args, GitCommandBehavior::AssertZeroExitCode).await
+    run_git_command(
+        path,
+        args,
+        GitCommandBehavior::AssertZeroExitCode,
+        GitCommandVerbosity::Verbose,
+    )
+    .await
 }
 
-pub(crate) async fn run_git_command_allow_failure(
+pub(crate) async fn run_git_command_quiet(
     path: &Utf8Path,
     args: &[&str],
+    behavior: GitCommandBehavior,
 ) -> eyre::Result<GitCommandOutput> {
-    run_git_command(path, args, GitCommandBehavior::AllowNonZeroExitCode).await
+    run_git_command(path, args, behavior, GitCommandVerbosity::Quiet).await
 }

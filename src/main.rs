@@ -106,27 +106,37 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> Option<RepoStatus>
         return None;
     }
 
-    let branch = match git::assert_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
+    let branch = match git::run_git_command_quiet(
+        path,
+        &["rev-parse", "--abbrev-ref", "HEAD"],
+        git::GitCommandBehavior::AssertZeroExitCode,
+    )
+    .await
+    {
         Ok(output) => output.stdout.trim().to_string(),
         Err(e) => {
             eprintln!(
-                "  {} Failed to get branch for {}: {}",
+                "  {} Failed to get branch for {}: {e}",
                 "⚠️".yellow(),
                 path.to_string().bright_cyan(),
-                e
             );
             return None;
         }
     };
 
-    let remote = match git::assert_git_command(path, &["remote", "get-url", "origin"]).await {
+    let remote = match git::run_git_command_quiet(
+        path,
+        &["remote", "get-url", "origin"],
+        git::GitCommandBehavior::AssertZeroExitCode,
+    )
+    .await
+    {
         Ok(output) => output.stdout.trim().to_string(),
         Err(e) => {
             eprintln!(
-                "  {} Failed to get remote for {}: {}",
+                "  {} Failed to get remote for {}: {e}",
                 "⚠️".yellow(),
                 path.to_string().bright_cyan(),
-                e
             );
             return None;
         }
@@ -134,49 +144,59 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> Option<RepoStatus>
 
     let action = match mode {
         SyncMode::Push => {
-            let status_output =
-                match git::assert_git_command(path, &["status", "--porcelain"]).await {
-                    Ok(output) => output,
-                    Err(e) => {
-                        eprintln!(
-                            "  {} Failed to get status for {}: {}",
-                            "⚠️".yellow(),
-                            path.to_string().bright_cyan(),
-                            e
-                        );
-                        return None;
-                    }
-                };
+            let status_output = match git::run_git_command_quiet(
+                path,
+                &["status", "--porcelain"],
+                git::GitCommandBehavior::AssertZeroExitCode,
+            )
+            .await
+            {
+                Ok(output) => output,
+                Err(e) => {
+                    eprintln!(
+                        "  {} Failed to get status for {}: {e}",
+                        "⚠️".yellow(),
+                        path.to_string().bright_cyan(),
+                    );
+                    return None;
+                }
+            };
 
-            let staged_output =
-                match git::run_git_command_allow_failure(path, &["diff", "--cached", "--quiet"])
-                    .await
-                {
-                    Ok(output) => output,
-                    Err(e) => {
-                        eprintln!(
-                            "  {} Failed to check staged changes for {}: {}",
-                            "⚠️".yellow(),
-                            path.to_string().bright_cyan(),
-                            e
-                        );
-                        return None;
-                    }
-                };
+            let staged_output = match git::run_git_command_quiet(
+                path,
+                &["diff", "--cached", "--quiet"],
+                git::GitCommandBehavior::AllowNonZeroExitCode,
+            )
+            .await
+            {
+                Ok(output) => output,
+                Err(e) => {
+                    eprintln!(
+                        "  {} Failed to check staged changes for {}: {e}",
+                        "⚠️".yellow(),
+                        path.to_string().bright_cyan(),
+                    );
+                    return None;
+                }
+            };
 
-            let rev_list_output =
-                match git::assert_git_command(path, &["rev-list", "@{u}..HEAD"]).await {
-                    Ok(output) => output,
-                    Err(e) => {
-                        eprintln!(
-                            "  {} Failed to check unpushed commits for {}: {}",
-                            "⚠️".yellow(),
-                            path.to_string().bright_cyan(),
-                            e
-                        );
-                        return None;
-                    }
-                };
+            let rev_list_output = match git::run_git_command_quiet(
+                path,
+                &["rev-list", "@{u}..HEAD"],
+                git::GitCommandBehavior::AssertZeroExitCode,
+            )
+            .await
+            {
+                Ok(output) => output,
+                Err(e) => {
+                    eprintln!(
+                        "  {} Failed to check unpushed commits for {}: {e}",
+                        "⚠️".yellow(),
+                        path.to_string().bright_cyan(),
+                    );
+                    return None;
+                }
+            };
 
             if !status_output.stdout.trim().is_empty() {
                 RepoAction::Stage
@@ -189,14 +209,19 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> Option<RepoStatus>
             }
         }
         SyncMode::Pull => {
-            let fetch_output = match git::assert_git_command(path, &["fetch", "--all"]).await {
+            let fetch_output = match git::run_git_command_quiet(
+                path,
+                &["fetch", "--all"],
+                git::GitCommandBehavior::AssertZeroExitCode,
+            )
+            .await
+            {
                 Ok(output) => output,
                 Err(e) => {
                     eprintln!(
-                        "  {} Failed to fetch changes for {}: {}",
+                        "  {} Failed to fetch changes for {}: {e}",
                         "⚠️".yellow(),
                         path.to_string().bright_cyan(),
-                        e
                     );
                     return None;
                 }
@@ -207,19 +232,23 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> Option<RepoStatus>
                 eprintln!("{}", fetch_output.stderr);
             }
 
-            let rev_list_output =
-                match git::assert_git_command(path, &["rev-list", "HEAD..@{u}"]).await {
-                    Ok(output) => output,
-                    Err(e) => {
-                        eprintln!(
-                            "  {} Failed to check for updates in {}: {}",
-                            "⚠️".yellow(),
-                            path.to_string().bright_cyan(),
-                            e
-                        );
-                        return None;
-                    }
-                };
+            let rev_list_output = match git::run_git_command_quiet(
+                path,
+                &["rev-list", "HEAD..@{u}"],
+                git::GitCommandBehavior::AssertZeroExitCode,
+            )
+            .await
+            {
+                Ok(output) => output,
+                Err(e) => {
+                    eprintln!(
+                        "  {} Failed to check for updates in {}: {e}",
+                        "⚠️".yellow(),
+                        path.to_string().bright_cyan(),
+                    );
+                    return None;
+                }
+            };
 
             if rev_list_output.stdout.trim().is_empty() {
                 return None;
