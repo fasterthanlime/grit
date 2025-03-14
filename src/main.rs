@@ -10,7 +10,7 @@
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use clap::Parser;
-use cli::{Args, Commands, RepoStatus, SyncMode};
+use cli::{Args, Commands, SyncMode};
 use config::read_repos_from_default_config;
 use eyre::Context;
 use futures_util::StreamExt;
@@ -197,6 +197,16 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<Optio
         action,
     }))
 }
+
+#[derive(Debug)]
+pub(crate) struct RepoStatus {
+    pub(crate) path: Utf8PathBuf,
+    pub(crate) branch: String,
+    pub(crate) remote: String,
+    pub(crate) action: Option<RepoAction>,
+}
+
+/// Defines the mode of synchronization
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RepoAction {

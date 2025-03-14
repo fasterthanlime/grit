@@ -1,7 +1,4 @@
-use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
-
-use crate::plan::RepoAction;
 
 /// Program to keep git repositories in sync between computers
 #[derive(Parser, Debug)]
@@ -19,16 +16,6 @@ pub(crate) enum Commands {
     /// Push local changes for all repositories
     Push,
 }
-
-#[derive(Debug)]
-pub(crate) struct RepoStatus {
-    pub(crate) path: Utf8PathBuf,
-    pub(crate) branch: String,
-    pub(crate) remote: String,
-    pub(crate) action: Option<RepoAction>,
-}
-
-/// Defines the mode of synchronization
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SyncMode {
     Pull,
