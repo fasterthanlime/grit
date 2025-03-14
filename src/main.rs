@@ -5,6 +5,7 @@
 // 4. Ask for consent before applying the plan, showing the exact commands to run
 // 5. When skipping a repo, explain why (couldn't parse git-rev, etc.)
 // 6. Better to panic if git output isn't as expected than to do harmful things
+// 7. When printing specific values, like paths, numbers, keywords like "yes" and "no", use colors suited to the theme
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
@@ -227,8 +228,12 @@ fn read_repos() -> eyre::Result<Vec<Utf8PathBuf>> {
     let config_file = Utf8PathBuf::from(&config_path);
 
     if !config_file.exists() {
-        eprintln!("Config file not found at {config_path}");
-        eprintln!("Would you like to create an empty config file? (yes/no)");
+        eprintln!("Config file not found at {}", config_path.bright_cyan());
+        eprintln!(
+            "Would you like to create an empty config file? ({}/{})",
+            "yes".green(),
+            "no".red()
+        );
 
         let mut input = String::new();
         io::stdin().read_line(&mut input)?;
@@ -243,7 +248,7 @@ fn read_repos() -> eyre::Result<Vec<Utf8PathBuf>> {
 
             std::fs::write(&config_file, example_config)?;
 
-            eprintln!("Empty config file created at {config_path}");
+            eprintln!("Empty config file created at {}", config_path.bright_cyan());
             eprintln!("What's your preferred text editor?");
 
             let mut editor = String::new();
@@ -260,8 +265,12 @@ fn read_repos() -> eyre::Result<Vec<Utf8PathBuf>> {
         }
     }
 
-    let file = File::open(&config_file)
-        .wrap_err_with(|| format!("Failed to open config file at {config_path}"))?;
+    let file = File::open(&config_file).wrap_err_with(|| {
+        format!(
+            "Failed to open config file at {}",
+            config_path.bright_cyan()
+        )
+    })?;
     let reader = io::BufReader::new(file);
     reader
         .lines()
@@ -296,7 +305,10 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     eprintln!("{plan}");
 
     // Ask for consent before applying the plan
-    eprint!("\nDo you want to proceed? Type 'yes' to continue: ");
+    eprint!(
+        "\nDo you want to proceed? Type {} to continue: ",
+        "yes".green()
+    );
     io::stdout().flush().wrap_err("Failed to flush stdout")?;
 
     let mut input = String::new();
@@ -305,7 +317,7 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
         .wrap_err("Failed to read input")?;
 
     if input.trim() != "yes" {
-        eprintln!("Operation cancelled.");
+        eprintln!("{}", "Operation cancelled.".red());
         return Ok(());
     }
 
