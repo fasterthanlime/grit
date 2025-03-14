@@ -44,12 +44,29 @@ async fn real_main() -> eyre::Result<()> {
 
 async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     let repos = read_repos_from_default_config()?;
-    let mut repo_statuses = futures_util::stream::iter(repos.iter())
+    let mut repo_statuses = Vec::new();
+    let mut errors = Vec::new();
+
+    futures_util::stream::iter(repos.iter())
         .map(|repo| async { get_repo_status(repo).await })
         .buffer_unordered(8)
-        .filter_map(|status| async move { status.ok().flatten() })
-        .collect::<Vec<_>>()
+        .for_each(|result| {
+            match result {
+                Ok(Some(status)) => repo_statuses.push(status),
+                Ok(None) => {}
+                Err(e) => errors.push(e),
+            }
+            futures_util::future::ready(())
+        })
         .await;
+
+    if !errors.is_empty() {
+        eprintln!("Encountered errors:");
+        for error in errors {
+            eprintln!("  {:?}", error);
+        }
+        std::process::exit(1);
+    }
 
     // Sort repo_statuses by path
     repo_statuses.sort_by(|a, b| a.path.cmp(&b.path));

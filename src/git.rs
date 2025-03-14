@@ -112,7 +112,15 @@ pub(crate) async fn run_git_command(
     match behavior {
         GitCommandBehavior::AssertZeroExitCode => {
             if !output.status.success() {
-                return Err(eyre::eyre!("Git command failed with non-zero exit code"));
+                let exit_code = output.status.code().unwrap_or(-1);
+                return Err(eyre::eyre!(
+                    "Git command {} {} failed with exit code {} in directory {}\n\nStandard Error:\n{}",
+                    "git".bright_green(),
+                    args.join(" ").bright_cyan(),
+                    exit_code.to_string().bright_red(),
+                    path.to_string().bright_blue(),
+                    output.stderr.trim().yellow()
+                ));
             }
         }
         GitCommandBehavior::AllowNonZeroExitCode => {}
