@@ -157,7 +157,9 @@ async fn get_repo_status(path: &Utf8Path) -> eyre::Result<Option<RepoStatus>> {
     )
     .await?;
 
-    if !fetch_output.stderr.is_empty() {
+    if fetch_output.status.success() {
+        eprintln!("  {} Successfully fetched changes", "✅".green());
+    } else {
         eprintln!("  {} Failed to fetch changes", "⚠️".yellow());
         eprintln!("{}", fetch_output.stderr.red());
     }
