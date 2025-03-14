@@ -27,13 +27,20 @@ grit push
 
 ## Configuration
 
-Edit the `REPOS` constant in `src/main.rs` to include your repositories:
+Create a configuration file at `~/.config/grit.conf` with your repositories:
 
-```rust
-static REPOS: &[&str] = &[
-    "~/projects/main-project",
-    "~/projects/utils",
-    "~/documents/notes",
-    "~/configs",
-];
+You can use hash (`#`) as comment lines in the configuration file, just like in Bash. Here's a sample configuration:
+
+```bash
+# Personal projects
+~/projects/main-project
+~/projects/utils
+
+# Work-related
+~/work/client-project
+~/work/internal-tools
+
+# Documentation and notes
+~/documents/notes
+~/configs
 ```

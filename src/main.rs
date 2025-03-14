@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use owo_colors::OwoColorize;
-use std::io::{self, Write};
+use std::fs::File;
+use std::io::{self, BufRead, Write};
 use std::path::Path;
 use std::process::{Command, Output};
 
@@ -20,16 +21,6 @@ enum Commands {
     Push,
 }
 
-/// Repositories to keep in sync
-static REPOS: &[&str] = &[
-    "~/dotfiles",
-    "~/bearcove/bearcove.eu",
-    "~/bearcove/snug",
-    "~/bearcove/snugkit",
-    "~/bearcove/sdr-podcast.com",
-    "~/bearcove/fasterthanli.me",
-];
-
 fn main() {
     let args = Args::parse();
 
@@ -39,10 +30,23 @@ fn main() {
     }
 }
 
+fn read_repos() -> Vec<String> {
+    // Read repository list from ~/.config/grit.conf
+    // Format: one repository path per line
+    let config_path = shellexpand::tilde("~/.config/grit.conf").to_string();
+    let file = File::open(config_path).expect("Failed to open config file");
+    let reader = io::BufReader::new(file);
+    reader
+        .lines()
+        .map(|line| line.expect("Failed to read line"))
+        .collect()
+}
+
 fn pull_repos() {
-    for repo in REPOS {
-        let path = shellexpand::tilde(repo);
-        eprintln!("{}:", repo.green().bold());
+    let repos = read_repos();
+    for repo in repos {
+        let path = shellexpand::tilde(&repo);
+        eprintln!("{repo}:");
 
         if !Path::new(&*path).exists() {
             eprintln!(
@@ -74,7 +78,7 @@ fn pull_repos() {
                     "  {} Successfully pulled changes",
                     "SUCCESS:".green().bold()
                 );
-                eprintln!("{}", String::from_utf8_lossy(&output.stdout));
+                eprintln!("{output_str}");
             }
         } else {
             eprintln!("  {} Failed to pull changes", "ERROR:".bright_red().bold());
@@ -85,9 +89,10 @@ fn pull_repos() {
 }
 
 fn push_repos() {
-    for repo in REPOS {
-        let path = shellexpand::tilde(repo);
-        eprintln!("{}:", repo.green().bold());
+    let repos = read_repos();
+    for repo in repos {
+        let path = shellexpand::tilde(&repo);
+        eprintln!("{repo}:");
 
         if !Path::new(&*path).exists() {
             eprintln!(
