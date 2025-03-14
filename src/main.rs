@@ -375,6 +375,14 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
 
     let pull_status = match (mode, existence) {
         (SyncMode::Pull, Existence::Exists) => {
+            // First, fetch all changes
+            let fetch_output = git::run_git_command(path, &["fetch", "--all"]).await?;
+            if !fetch_output.stderr.is_empty() {
+                eprintln!("  {} Failed to fetch changes", "⚠️".yellow());
+                eprintln!("{}", fetch_output.stderr);
+            }
+
+            // Then check if there are changes to pull
             let output = git::run_git_command(path, &["rev-list", "HEAD..@{u}"]).await?;
             if output.stdout.trim().is_empty() {
                 PullStatus::UpToDate
