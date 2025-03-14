@@ -9,25 +9,25 @@ use crate::git;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RepoAction {
-    NeedsStage,
-    NeedsCommit,
-    NeedsPush,
-    UpToDate,
+    Stage,
+    Commit,
+    Push,
+    Pull,
 }
 
 impl RepoAction {
     pub(crate) fn needs_stage(&self) -> bool {
-        matches!(self, RepoAction::NeedsStage)
+        matches!(self, RepoAction::Stage)
     }
 
     pub(crate) fn needs_commit(&self) -> bool {
-        matches!(self, RepoAction::NeedsStage | RepoAction::NeedsCommit)
+        matches!(self, RepoAction::Stage | RepoAction::Commit)
     }
 
     pub(crate) fn needs_push(&self) -> bool {
         matches!(
             self,
-            RepoAction::NeedsStage | RepoAction::NeedsCommit | RepoAction::NeedsPush
+            RepoAction::Stage | RepoAction::Commit | RepoAction::Push
         )
     }
 }
@@ -177,15 +177,15 @@ impl fmt::Display for ExecutionPlan {
                 f,
                 "  Status: {}",
                 match status.action {
-                    RepoAction::NeedsStage => "Needs staging".style(Style::new().bright_red()),
-                    RepoAction::NeedsCommit => "Needs commit".style(Style::new().bright_yellow()),
-                    RepoAction::NeedsPush => "Needs push".style(Style::new().bright_blue()),
-                    RepoAction::UpToDate => "Up to date".style(Style::new().bright_green()),
+                    RepoAction::Stage => "Needs staging".style(Style::new().bright_red()),
+                    RepoAction::Commit => "Needs commit".style(Style::new().bright_yellow()),
+                    RepoAction::Push => "Needs push".style(Style::new().bright_blue()),
+                    RepoAction::Pull => "Needs pull".style(Style::new().bright_magenta()),
                 }
             )?;
 
             match status.action {
-                RepoAction::NeedsStage => {
+                RepoAction::Stage => {
                     writeln!(f, "  {}: git add .", "Will execute".bright_blue())?;
                     writeln!(f, "  {}: commit message", "Will prompt for".bright_blue())?;
                     writeln!(
@@ -195,7 +195,7 @@ impl fmt::Display for ExecutionPlan {
                     )?;
                     writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
                 }
-                RepoAction::NeedsCommit => {
+                RepoAction::Commit => {
                     writeln!(f, "  {}: commit message", "Will prompt for".bright_blue())?;
                     writeln!(
                         f,
@@ -204,15 +204,11 @@ impl fmt::Display for ExecutionPlan {
                     )?;
                     writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
                 }
-                RepoAction::NeedsPush => {
+                RepoAction::Push => {
                     writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
                 }
-                RepoAction::UpToDate => {
-                    if self.mode == SyncMode::Pull {
-                        writeln!(f, "  {}: git pull", "Will execute".bright_blue())?;
-                    } else {
-                        writeln!(f, "  {}: No action needed", "Status".bright_green())?;
-                    }
+                RepoAction::Pull => {
+                    writeln!(f, "  {}: git pull", "Will execute".bright_blue())?;
                 }
             }
         }

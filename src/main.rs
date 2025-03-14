@@ -179,13 +179,13 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> Option<RepoStatus>
                 };
 
             if !status_output.stdout.trim().is_empty() {
-                RepoAction::NeedsStage
+                RepoAction::Stage
             } else if staged_output.status.code() == Some(1) {
-                RepoAction::NeedsCommit
+                RepoAction::Commit
             } else if !rev_list_output.stdout.trim().is_empty() {
-                RepoAction::NeedsPush
+                RepoAction::Push
             } else {
-                RepoAction::UpToDate
+                return None;
             }
         }
         SyncMode::Pull => {
@@ -222,9 +222,9 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> Option<RepoStatus>
                 };
 
             if rev_list_output.stdout.trim().is_empty() {
-                RepoAction::UpToDate
+                return None;
             } else {
-                RepoAction::NeedsPush // This actually means "needs pull" in this context
+                RepoAction::Pull
             }
         }
     };
