@@ -21,12 +21,23 @@ enum Commands {
     Push,
 }
 
+#[derive(Debug)]
+struct RepoStatus {
+    path: String,
+    exists: bool,
+    branch: String,
+    remote: String,
+    has_changes: bool,
+    needs_pull: bool,
+    needs_push: bool,
+}
+
 fn main() {
     let args = Args::parse();
 
     match args.command {
-        Commands::Pull => pull_repos(),
-        Commands::Push => push_repos(),
+        Commands::Pull => sync_repos(true),
+        Commands::Push => sync_repos(false),
     }
 }
 
@@ -42,137 +53,190 @@ fn read_repos() -> Vec<String> {
         .collect()
 }
 
-fn pull_repos() {
+fn sync_repos(is_pull: bool) {
     let repos = read_repos();
+    let mut repo_statuses = Vec::new();
+
     for repo in repos {
-        let path = shellexpand::tilde(&repo);
-        eprintln!("{repo}:");
+        let path = shellexpand::tilde(&repo).to_string();
+        let status = get_repo_status(&path, is_pull);
+        repo_statuses.push(status);
+    }
 
-        if !Path::new(&*path).exists() {
-            eprintln!(
-                "  {} {}",
-                "ERROR:".bright_red().bold(),
-                "Directory does not exist".dimmed()
-            );
-            continue;
-        }
+    print_summary(&repo_statuses, is_pull);
 
-        // Check for local changes
-        let status = run_git_command(&path, &["status", "--porcelain"]);
-        if !status.stdout.is_empty() {
-            eprintln!("  {} Local changes detected", "WARNING:".yellow().bold());
-            eprintln!("  Consider committing your changes first:");
-            eprintln!("    {} git add .", "→".blue());
-            eprintln!("    {} git commit -m \"Your message\"", "→".blue());
-            continue;
-        }
+    print!("\nDo you want to proceed? Type 'yes' to continue: ");
+    io::stdout().flush().unwrap();
 
-        // Pull changes
-        let output = run_git_command(&path, &["pull"]);
-        if output.status.success() {
-            let output_str = String::from_utf8_lossy(&output.stdout);
-            if output_str.contains("Already up to date") {
-                eprintln!("  {} Already up to date", "INFO:".bright_blue().bold());
-            } else {
-                eprintln!(
-                    "  {} Successfully pulled changes",
-                    "SUCCESS:".green().bold()
-                );
-                eprintln!("{output_str}");
-            }
-        } else {
-            eprintln!("  {} Failed to pull changes", "ERROR:".bright_red().bold());
-            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
-        }
-        eprintln!();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).unwrap();
+
+    if input.trim() != "yes" {
+        println!("Operation cancelled.");
+        return;
+    }
+
+    execute_plan(&repo_statuses, is_pull);
+    print_final_summary(&repo_statuses, is_pull);
+}
+
+fn get_repo_status(path: &str, is_pull: bool) -> RepoStatus {
+    let exists = Path::new(path).exists();
+    let branch = if exists {
+        String::from_utf8_lossy(
+            &run_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).stdout,
+        )
+        .trim()
+        .to_string()
+    } else {
+        String::new()
+    };
+    let remote = if exists {
+        String::from_utf8_lossy(&run_git_command(path, &["remote", "get-url", "origin"]).stdout)
+            .trim()
+            .to_string()
+    } else {
+        String::new()
+    };
+    let has_changes = exists
+        && !run_git_command(path, &["status", "--porcelain"])
+            .stdout
+            .is_empty();
+    let needs_pull = is_pull
+        && exists
+        && !String::from_utf8_lossy(&run_git_command(path, &["rev-list", "HEAD..@{u}"]).stdout)
+            .trim()
+            .is_empty();
+    let needs_push = !is_pull
+        && exists
+        && !String::from_utf8_lossy(&run_git_command(path, &["rev-list", "@{u}..HEAD"]).stdout)
+            .trim()
+            .is_empty();
+
+    RepoStatus {
+        path: path.to_string(),
+        exists,
+        branch,
+        remote,
+        has_changes,
+        needs_pull,
+        needs_push,
     }
 }
 
-fn push_repos() {
-    let repos = read_repos();
-    for repo in repos {
-        let path = shellexpand::tilde(&repo);
-        eprintln!("{repo}:");
+fn print_summary(repo_statuses: &[RepoStatus], is_pull: bool) {
+    println!("\n{} Summary:", if is_pull { "Pull" } else { "Push" });
+    for status in repo_statuses {
+        println!("\n📁 {}", status.path.bright_cyan());
+        if !status.exists {
+            println!("  {} Directory does not exist", "⚠️".yellow());
+            continue;
+        }
+        println!("  Branch: {}", status.branch.bright_magenta());
+        println!("  Remote: {}", status.remote.bright_blue());
+        if status.branch != "main" && status.branch != "master" {
+            println!("  {} Not on main branch", "⚠️".yellow());
+        }
+        if status.has_changes {
+            println!("  {} Local changes detected", "📝".yellow());
+        }
+        if is_pull && status.needs_pull {
+            println!("  {} Changes to pull", "⬇️".green());
+        } else if !is_pull && status.needs_push {
+            println!("  {} Changes to push", "⬆️".green());
+        } else {
+            println!("  {} Up to date", "✅".green());
+        }
+    }
+}
 
-        if !Path::new(&*path).exists() {
-            eprintln!(
-                "  {} {}",
-                "ERROR:".bright_red().bold(),
-                "Directory does not exist".dimmed()
-            );
+fn execute_plan(repo_statuses: &[RepoStatus], is_pull: bool) {
+    for status in repo_statuses {
+        if !status.exists {
             continue;
         }
 
-        // Check for changes
-        let status = run_git_command(&path, &["status", "--porcelain"]);
-        if !status.stdout.is_empty() {
-            eprintln!("  {} Changes detected:", "INFO:".bright_blue().bold());
-            eprintln!("{}", String::from_utf8_lossy(&status.stdout));
+        println!("\n📁 {}", status.path.bright_cyan());
 
-            print!("  Would you like to stage these changes? [y/N]: ");
-            io::stdout().flush().unwrap();
-
-            let mut input = String::new();
-            io::stdin().read_line(&mut input).unwrap();
-
-            if input.trim().to_lowercase() == "y" {
-                // Stage changes
-                let add_output = run_git_command(&path, &["add", "."]);
+        if is_pull && status.needs_pull {
+            let output = run_git_command(&status.path, &["pull"]);
+            if output.status.success() {
+                println!("  {} Successfully pulled changes", "✅".green());
+            } else {
+                println!("  {} Failed to pull changes", "❌".red());
+                println!("{}", String::from_utf8_lossy(&output.stderr));
+            }
+        } else if !is_pull && (status.has_changes || status.needs_push) {
+            if status.has_changes {
+                let add_output = run_git_command(&status.path, &["add", "."]);
                 if !add_output.status.success() {
-                    eprintln!("  {} Failed to stage changes", "ERROR:".bright_red().bold());
-                    eprintln!("{}", String::from_utf8_lossy(&add_output.stderr));
+                    println!("  {} Failed to stage changes", "❌".red());
+                    println!("{}", String::from_utf8_lossy(&add_output.stderr));
                     continue;
                 }
 
-                // Get commit message
                 print!("  Enter commit message: ");
                 io::stdout().flush().unwrap();
-
                 let mut commit_msg = String::new();
                 io::stdin().read_line(&mut commit_msg).unwrap();
 
-                // Commit changes
-                let commit_output = run_git_command(&path, &["commit", "-m", commit_msg.trim()]);
+                let commit_output =
+                    run_git_command(&status.path, &["commit", "-m", commit_msg.trim()]);
                 if !commit_output.status.success() {
-                    eprintln!(
-                        "  {} Failed to commit changes",
-                        "ERROR:".bright_red().bold()
-                    );
-                    eprintln!("{}", String::from_utf8_lossy(&commit_output.stderr));
+                    println!("  {} Failed to commit changes", "❌".red());
+                    println!("{}", String::from_utf8_lossy(&commit_output.stderr));
                     continue;
                 }
-
-                eprintln!("  {} Changes committed", "SUCCESS:".green().bold());
-            } else {
-                eprintln!("  Skipping repository");
-                continue;
+                println!("  {} Changes committed", "✅".green());
             }
-        } else {
-            eprintln!("  {} No changes to commit", "INFO:".bright_blue().bold());
-        }
 
-        // Push changes
-        print!("  Push changes to remote? [y/N]: ");
-        io::stdout().flush().unwrap();
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-
-        if input.trim().to_lowercase() == "y" {
-            let push_output = run_git_command(&path, &["push"]);
+            let push_output = run_git_command(&status.path, &["push"]);
             if push_output.status.success() {
-                eprintln!(
-                    "  {} Successfully pushed changes",
-                    "SUCCESS:".green().bold()
-                );
+                println!("  {} Successfully pushed changes", "✅".green());
             } else {
-                eprintln!("  {} Failed to push changes", "ERROR:".bright_red().bold());
-                eprintln!("{}", String::from_utf8_lossy(&push_output.stderr));
+                println!("  {} Failed to push changes", "❌".red());
+                println!("{}", String::from_utf8_lossy(&push_output.stderr));
             }
         } else {
-            eprintln!("  Skipping push");
+            println!("  {} No action needed", "ℹ️".blue());
         }
-        eprintln!();
+    }
+}
+
+fn print_final_summary(repo_statuses: &[RepoStatus], is_pull: bool) {
+    println!("\n{} Final Summary:", if is_pull { "Pull" } else { "Push" });
+    for status in repo_statuses {
+        if !status.exists {
+            continue;
+        }
+        println!("\n📁 {}", status.path.bright_cyan());
+        println!("  Branch: {}", status.branch.bright_magenta());
+        println!("  Remote: {}", status.remote.bright_blue());
+        if is_pull {
+            println!(
+                "  {} {}",
+                if status.needs_pull { "⬇️" } else { "✅" },
+                if status.needs_pull {
+                    "Changes pulled"
+                } else {
+                    "Already up to date"
+                }
+            );
+        } else {
+            println!(
+                "  {} {}",
+                if status.needs_push || status.has_changes {
+                    "⬆️"
+                } else {
+                    "✅"
+                },
+                if status.needs_push || status.has_changes {
+                    "Changes pushed"
+                } else {
+                    "No changes to push"
+                }
+            );
+        }
     }
 }
 
