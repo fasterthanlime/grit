@@ -268,8 +268,17 @@ impl ExecutionPlan {
                         let mut input = String::new();
                         std::io::stdin().read_line(&mut input)?;
 
-                        // Proceed with commit
-                        git::assert_git_command(&repo_plan.status.path, &["commit"]).await?;
+                        // We can't use assert_git_command here because 'git commit' opens a text editor,
+                        // which requires inheriting the standard input. We need to run it manually.
+                        let status = tokio::process::Command::new("git")
+                            .current_dir(&repo_plan.status.path)
+                            .arg("commit")
+                            .status()
+                            .await?;
+
+                        if !status.success() {
+                            return Err(eyre::eyre!("Git commit failed"));
+                        }
                     }
                     ActionStep::Push => {
                         git::assert_git_command(&repo_plan.status.path, &["push"]).await?;
