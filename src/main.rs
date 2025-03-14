@@ -10,13 +10,14 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::Parser;
 use cli::{Args, ChangeStatus, Commands, Existence, PullStatus, PushStatus, RepoStatus, SyncMode};
+use config::read_repos_from_default_config;
 use eyre::Context;
 use owo_colors::OwoColorize;
 use std::fmt;
-use std::fs::File;
-use std::io::{self, BufRead, Write};
+use std::io::{self, Write};
 
 mod cli;
+mod config;
 mod git;
 
 #[derive(Debug)]
@@ -223,73 +224,8 @@ async fn real_main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn read_repos() -> eyre::Result<Vec<Utf8PathBuf>> {
-    let config_path = shellexpand::tilde("~/.config/grit.conf").to_string();
-    let config_file = Utf8PathBuf::from(&config_path);
-
-    if !config_file.exists() {
-        eprintln!("Config file not found at {}", config_path.bright_cyan());
-        eprintln!(
-            "Would you like to create an empty config file? ({}/{})",
-            "yes".green(),
-            "no".red()
-        );
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input)?;
-
-        if input.trim().to_lowercase() == "yes" {
-            let example_config = r#"# Grit configuration file
-# List one repository path per line, e.g.:
-# /home/user/projects/repo1
-# /home/user/projects/repo2
-# ~/Documents/github/my-project
-"#;
-
-            std::fs::write(&config_file, example_config)?;
-
-            eprintln!("Empty config file created at {}", config_path.bright_cyan());
-            eprintln!("What's your preferred text editor?");
-
-            let mut editor = String::new();
-            io::stdin().read_line(&mut editor)?;
-            editor = editor.trim().to_string();
-
-            if !editor.is_empty() {
-                std::process::Command::new(&editor)
-                    .arg(&config_path)
-                    .status()?;
-            }
-        } else {
-            return Ok(Vec::new());
-        }
-    }
-
-    let file = File::open(&config_file).wrap_err_with(|| {
-        format!(
-            "Failed to open config file at {}",
-            config_path.bright_cyan()
-        )
-    })?;
-    let reader = io::BufReader::new(file);
-    reader
-        .lines()
-        .filter_map(|line| {
-            let line = line.ok()?;
-            let trimmed = line.trim();
-            if trimmed.starts_with('#') || trimmed.is_empty() {
-                None
-            } else {
-                Some(Ok(Utf8PathBuf::from(
-                    shellexpand::tilde(trimmed).to_string(),
-                )))
-            }
-        })
-        .collect()
-}
-
 async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
-    let repos = read_repos()?;
+    let repos = read_repos_from_default_config()?;
     let mut repo_statuses = Vec::new();
 
     for repo in &repos {
