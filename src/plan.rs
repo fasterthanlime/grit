@@ -1,8 +1,6 @@
 use camino::Utf8PathBuf;
-use eyre::Context;
 use owo_colors::{OwoColorize, Style};
 use std::fmt;
-use std::io::{self, Write};
 
 use crate::cli::{RepoStatus, SyncMode};
 use crate::git;
