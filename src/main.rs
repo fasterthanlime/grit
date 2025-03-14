@@ -42,13 +42,13 @@ fn main() {
 fn pull_repos() {
     for repo in REPOS {
         let path = shellexpand::tilde(repo);
-        println!("{}:", repo.green().bold());
+        eprintln!("{}:", repo.green().bold());
 
         if !Path::new(&*path).exists() {
-            println!(
+            eprintln!(
                 "  {} {}",
                 "ERROR:".bright_red().bold(),
-                "Directory does not exist"
+                "Directory does not exist".dimmed()
             );
             continue;
         }
@@ -56,10 +56,10 @@ fn pull_repos() {
         // Check for local changes
         let status = run_git_command(&path, &["status", "--porcelain"]);
         if !status.stdout.is_empty() {
-            println!("  {} Local changes detected", "WARNING:".yellow().bold());
-            println!("  Consider committing your changes first:");
-            println!("    {} git add .", "→".blue());
-            println!("    {} git commit -m \"Your message\"", "→".blue());
+            eprintln!("  {} Local changes detected", "WARNING:".yellow().bold());
+            eprintln!("  Consider committing your changes first:");
+            eprintln!("    {} git add .", "→".blue());
+            eprintln!("    {} git commit -m \"Your message\"", "→".blue());
             continue;
         }
 
@@ -68,32 +68,32 @@ fn pull_repos() {
         if output.status.success() {
             let output_str = String::from_utf8_lossy(&output.stdout);
             if output_str.contains("Already up to date") {
-                println!("  {} Already up to date", "INFO:".bright_blue().bold());
+                eprintln!("  {} Already up to date", "INFO:".bright_blue().bold());
             } else {
-                println!(
+                eprintln!(
                     "  {} Successfully pulled changes",
                     "SUCCESS:".green().bold()
                 );
-                println!("{}", String::from_utf8_lossy(&output.stdout));
+                eprintln!("{}", String::from_utf8_lossy(&output.stdout));
             }
         } else {
-            println!("  {} Failed to pull changes", "ERROR:".bright_red().bold());
-            println!("{}", String::from_utf8_lossy(&output.stderr));
+            eprintln!("  {} Failed to pull changes", "ERROR:".bright_red().bold());
+            eprintln!("{}", String::from_utf8_lossy(&output.stderr));
         }
-        println!();
+        eprintln!();
     }
 }
 
 fn push_repos() {
     for repo in REPOS {
         let path = shellexpand::tilde(repo);
-        println!("{}:", repo.green().bold());
+        eprintln!("{}:", repo.green().bold());
 
         if !Path::new(&*path).exists() {
-            println!(
+            eprintln!(
                 "  {} {}",
                 "ERROR:".bright_red().bold(),
-                "Directory does not exist"
+                "Directory does not exist".dimmed()
             );
             continue;
         }
@@ -101,8 +101,8 @@ fn push_repos() {
         // Check for changes
         let status = run_git_command(&path, &["status", "--porcelain"]);
         if !status.stdout.is_empty() {
-            println!("  {} Changes detected:", "INFO:".bright_blue().bold());
-            println!("{}", String::from_utf8_lossy(&status.stdout));
+            eprintln!("  {} Changes detected:", "INFO:".bright_blue().bold());
+            eprintln!("{}", String::from_utf8_lossy(&status.stdout));
 
             print!("  Would you like to stage these changes? [y/N]: ");
             io::stdout().flush().unwrap();
@@ -114,8 +114,8 @@ fn push_repos() {
                 // Stage changes
                 let add_output = run_git_command(&path, &["add", "."]);
                 if !add_output.status.success() {
-                    println!("  {} Failed to stage changes", "ERROR:".bright_red().bold());
-                    println!("{}", String::from_utf8_lossy(&add_output.stderr));
+                    eprintln!("  {} Failed to stage changes", "ERROR:".bright_red().bold());
+                    eprintln!("{}", String::from_utf8_lossy(&add_output.stderr));
                     continue;
                 }
 
@@ -129,21 +129,21 @@ fn push_repos() {
                 // Commit changes
                 let commit_output = run_git_command(&path, &["commit", "-m", commit_msg.trim()]);
                 if !commit_output.status.success() {
-                    println!(
+                    eprintln!(
                         "  {} Failed to commit changes",
                         "ERROR:".bright_red().bold()
                     );
-                    println!("{}", String::from_utf8_lossy(&commit_output.stderr));
+                    eprintln!("{}", String::from_utf8_lossy(&commit_output.stderr));
                     continue;
                 }
 
-                println!("  {} Changes committed", "SUCCESS:".green().bold());
+                eprintln!("  {} Changes committed", "SUCCESS:".green().bold());
             } else {
-                println!("  Skipping repository");
+                eprintln!("  Skipping repository");
                 continue;
             }
         } else {
-            println!("  {} No changes to commit", "INFO:".bright_blue().bold());
+            eprintln!("  {} No changes to commit", "INFO:".bright_blue().bold());
         }
 
         // Push changes
@@ -156,18 +156,18 @@ fn push_repos() {
         if input.trim().to_lowercase() == "y" {
             let push_output = run_git_command(&path, &["push"]);
             if push_output.status.success() {
-                println!(
+                eprintln!(
                     "  {} Successfully pushed changes",
                     "SUCCESS:".green().bold()
                 );
             } else {
-                println!("  {} Failed to push changes", "ERROR:".bright_red().bold());
-                println!("{}", String::from_utf8_lossy(&push_output.stderr));
+                eprintln!("  {} Failed to push changes", "ERROR:".bright_red().bold());
+                eprintln!("{}", String::from_utf8_lossy(&push_output.stderr));
             }
         } else {
-            println!("  Skipping push");
+            eprintln!("  Skipping push");
         }
-        println!();
+        eprintln!();
     }
 }
 
