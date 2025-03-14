@@ -319,12 +319,13 @@ impl fmt::Display for ExecutionPlan {
             } else {
                 status.path.clone()
             };
+            let normalized_remote = normalize_remote(&status.remote);
             writeln!(
                 f,
                 "📁 {} {} @ {}",
                 display_path.bright_cyan(),
                 status.branch.bright_green(),
-                status.remote.bright_yellow()
+                normalized_remote
             )?;
 
             let mut actions = Vec::new();
@@ -370,5 +371,43 @@ impl fmt::Display for ExecutionPlan {
         }
 
         Ok(())
+    }
+}
+
+/// turns `https://github.com/fasterthanlime/blah` into `gh:fasterthanlime/blah`
+/// turns `https://code.bearcove.cloud/amos/bar` into `bcc:amos/bar`
+fn normalize_remote(remote: &str) -> String {
+    let remote = remote.strip_suffix(".git").unwrap_or(remote);
+    if let Some(github_path) = remote.strip_prefix("https://github.com/") {
+        format!("{}{}", "gh:".bright_blue(), github_path.bright_yellow())
+    } else if let Some(bearcove_path) = remote.strip_prefix("https://code.bearcove.cloud/") {
+        format!("{}{}", "bcc:".bright_blue(), bearcove_path.bright_yellow())
+    } else {
+        remote.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_normalize_remote() {
+        assert_eq!(
+            normalize_remote("https://github.com/fasterthanlime/blah.git"),
+            format!(
+                "{}{}",
+                "gh:".bright_blue(),
+                "fasterthanlime/blah".bright_yellow()
+            )
+        );
+        assert_eq!(
+            normalize_remote("https://code.bearcove.cloud/amos/bar"),
+            format!("{}{}", "bcc:".bright_blue(), "amos/bar".bright_yellow())
+        );
+        assert_eq!(
+            normalize_remote("https://gitlab.com/some/project.git"),
+            "https://gitlab.com/some/project"
+        );
     }
 }
