@@ -9,11 +9,11 @@
 
 use camino::Utf8Path;
 use clap::Parser;
-use cli::{Args, Commands, Existence, RepoAction, RepoStatus, SyncMode};
+use cli::{Args, Commands, RepoStatus, SyncMode};
 use config::read_repos_from_default_config;
 use eyre::Context;
 use owo_colors::OwoColorize;
-use plan::ExecutionPlan;
+use plan::{ExecutionPlan, RepoAction};
 use std::io::{self, Write};
 
 mod cli;
@@ -44,8 +44,9 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     let mut repo_statuses = Vec::new();
 
     for repo in &repos {
-        let status = get_repo_status(repo, &mode).await?;
-        repo_statuses.push(status);
+        if let Some(status) = get_repo_status(repo, &mode).await {
+            repo_statuses.push(status);
+        }
     }
 
     // First, create the plan from all gathered data
@@ -95,88 +96,141 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoStatus> {
-    let existence = if path.exists() {
-        if path.join(".git").is_dir() {
-            Existence::Exists
-        } else {
+async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> Option<RepoStatus> {
+    if !path.exists() || !path.join(".git").is_dir() {
+        eprintln!(
+            "  {} {} is not a valid git repository",
+            "⚠️".yellow(),
+            path.to_string().bright_cyan()
+        );
+        return None;
+    }
+
+    let branch = match git::assert_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).await {
+        Ok(output) => output.stdout.trim().to_string(),
+        Err(e) => {
             eprintln!(
-                "  {} Directory exists but is not a git repository",
-                "⚠️".yellow()
+                "  {} Failed to get branch for {}: {}",
+                "⚠️".yellow(),
+                path.to_string().bright_cyan(),
+                e
             );
-            Existence::DoesNotExist
+            return None;
         }
-    } else {
-        Existence::DoesNotExist
     };
 
-    let branch = match existence {
-        Existence::Exists => {
-            let output =
-                git::assert_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
-            output.stdout.trim().to_string()
+    let remote = match git::assert_git_command(path, &["remote", "get-url", "origin"]).await {
+        Ok(output) => output.stdout.trim().to_string(),
+        Err(e) => {
+            eprintln!(
+                "  {} Failed to get remote for {}: {}",
+                "⚠️".yellow(),
+                path.to_string().bright_cyan(),
+                e
+            );
+            return None;
         }
-        Existence::DoesNotExist => String::new(),
     };
 
-    let remote = match existence {
-        Existence::Exists => {
-            let output = git::assert_git_command(path, &["remote", "get-url", "origin"]).await?;
-            output.stdout.trim().to_string()
-        }
-        Existence::DoesNotExist => String::new(),
-    };
+    let action = match mode {
+        SyncMode::Push => {
+            let status_output =
+                match git::assert_git_command(path, &["status", "--porcelain"]).await {
+                    Ok(output) => output,
+                    Err(e) => {
+                        eprintln!(
+                            "  {} Failed to get status for {}: {}",
+                            "⚠️".yellow(),
+                            path.to_string().bright_cyan(),
+                            e
+                        );
+                        return None;
+                    }
+                };
 
-    let action = match (mode, existence) {
-        (SyncMode::Push, Existence::Exists) => {
-            // Check if there are unstaged changes
-            // 'git status --porcelain' shows a machine-parsable status output
-            let status_output = git::assert_git_command(path, &["status", "--porcelain"]).await?;
-
-            // Check if there are staged changes that haven't been committed
             let staged_output =
-                git::run_git_command_allow_failure(path, &["diff", "--cached", "--quiet"]).await?;
+                match git::run_git_command_allow_failure(path, &["diff", "--cached", "--quiet"])
+                    .await
+                {
+                    Ok(output) => output,
+                    Err(e) => {
+                        eprintln!(
+                            "  {} Failed to check staged changes for {}: {}",
+                            "⚠️".yellow(),
+                            path.to_string().bright_cyan(),
+                            e
+                        );
+                        return None;
+                    }
+                };
 
-            // Check if there are commits that haven't been pushed
-            // 'git rev-list @{u}..HEAD' shows commits that are in HEAD but not in the upstream branch
             let rev_list_output =
-                git::assert_git_command(path, &["rev-list", "@{u}..HEAD"]).await?;
+                match git::assert_git_command(path, &["rev-list", "@{u}..HEAD"]).await {
+                    Ok(output) => output,
+                    Err(e) => {
+                        eprintln!(
+                            "  {} Failed to check unpushed commits for {}: {}",
+                            "⚠️".yellow(),
+                            path.to_string().bright_cyan(),
+                            e
+                        );
+                        return None;
+                    }
+                };
 
             if !status_output.stdout.trim().is_empty() {
-                // There are unstaged changes
                 RepoAction::NeedsStage
             } else if staged_output.status.code() == Some(1) {
-                // There are staged changes that haven't been committed
                 RepoAction::NeedsCommit
             } else if !rev_list_output.stdout.trim().is_empty() {
-                // There are commits that haven't been pushed
                 RepoAction::NeedsPush
             } else {
-                // No changes to stage, commit, or push
                 RepoAction::UpToDate
             }
         }
-        (SyncMode::Pull, Existence::Exists) => {
-            let fetch_output = git::assert_git_command(path, &["fetch", "--all"]).await?;
+        SyncMode::Pull => {
+            let fetch_output = match git::assert_git_command(path, &["fetch", "--all"]).await {
+                Ok(output) => output,
+                Err(e) => {
+                    eprintln!(
+                        "  {} Failed to fetch changes for {}: {}",
+                        "⚠️".yellow(),
+                        path.to_string().bright_cyan(),
+                        e
+                    );
+                    return None;
+                }
+            };
+
             if !fetch_output.stderr.is_empty() {
                 eprintln!("  {} Failed to fetch changes", "⚠️".yellow());
                 eprintln!("{}", fetch_output.stderr);
             }
 
             let rev_list_output =
-                git::assert_git_command(path, &["rev-list", "HEAD..@{u}"]).await?;
+                match git::assert_git_command(path, &["rev-list", "HEAD..@{u}"]).await {
+                    Ok(output) => output,
+                    Err(e) => {
+                        eprintln!(
+                            "  {} Failed to check for updates in {}: {}",
+                            "⚠️".yellow(),
+                            path.to_string().bright_cyan(),
+                            e
+                        );
+                        return None;
+                    }
+                };
+
             if rev_list_output.stdout.trim().is_empty() {
                 RepoAction::UpToDate
             } else {
                 RepoAction::NeedsPush // This actually means "needs pull" in this context
             }
         }
-        _ => RepoAction::UpToDate,
     };
 
-    Ok(RepoStatus {
+    Some(RepoStatus {
         path: path.to_owned(),
-        existence,
         branch,
         remote,
         action,

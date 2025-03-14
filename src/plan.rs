@@ -4,8 +4,33 @@ use owo_colors::{OwoColorize, Style};
 use std::fmt;
 use std::io::{self, Write};
 
-use crate::cli::{Existence, RepoAction, RepoStatus, SyncMode};
+use crate::cli::{RepoStatus, SyncMode};
 use crate::git;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RepoAction {
+    NeedsStage,
+    NeedsCommit,
+    NeedsPush,
+    UpToDate,
+}
+
+impl RepoAction {
+    pub(crate) fn needs_stage(&self) -> bool {
+        matches!(self, RepoAction::NeedsStage)
+    }
+
+    pub(crate) fn needs_commit(&self) -> bool {
+        matches!(self, RepoAction::NeedsStage | RepoAction::NeedsCommit)
+    }
+
+    pub(crate) fn needs_push(&self) -> bool {
+        matches!(
+            self,
+            RepoAction::NeedsStage | RepoAction::NeedsCommit | RepoAction::NeedsPush
+        )
+    }
+}
 
 // In plan.rs, update ActionStep and ExecutionPlan
 pub(crate) enum ActionStep {
@@ -81,23 +106,21 @@ impl ExecutionPlan {
         let mut steps = Vec::new();
 
         for status in &repo_statuses {
-            if status.existence == Existence::Exists {
-                match mode {
-                    SyncMode::Push => {
-                        if status.action.needs_stage() {
-                            steps.push(ActionStep::Stage(status.path.clone()));
-                        }
-                        if status.action.needs_commit() {
-                            steps.push(ActionStep::Commit(status.path.clone()));
-                        }
-                        if status.action.needs_push() {
-                            steps.push(ActionStep::Push(status.path.clone()));
-                        }
+            match mode {
+                SyncMode::Push => {
+                    if status.action.needs_stage() {
+                        steps.push(ActionStep::Stage(status.path.clone()));
                     }
-                    SyncMode::Pull => {
-                        if status.action.needs_push() {
-                            steps.push(ActionStep::Pull(status.path.clone()));
-                        }
+                    if status.action.needs_commit() {
+                        steps.push(ActionStep::Commit(status.path.clone()));
+                    }
+                    if status.action.needs_push() {
+                        steps.push(ActionStep::Push(status.path.clone()));
+                    }
+                }
+                SyncMode::Pull => {
+                    if status.action.needs_push() {
+                        steps.push(ActionStep::Pull(status.path.clone()));
                     }
                 }
             }

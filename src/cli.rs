@@ -1,30 +1,7 @@
 use camino::Utf8PathBuf;
 use clap::{Parser, Subcommand};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum RepoAction {
-    NeedsStage,
-    NeedsCommit,
-    NeedsPush,
-    UpToDate,
-}
-
-impl RepoAction {
-    pub(crate) fn needs_stage(&self) -> bool {
-        matches!(self, RepoAction::NeedsStage)
-    }
-
-    pub(crate) fn needs_commit(&self) -> bool {
-        matches!(self, RepoAction::NeedsStage | RepoAction::NeedsCommit)
-    }
-
-    pub(crate) fn needs_push(&self) -> bool {
-        matches!(
-            self,
-            RepoAction::NeedsStage | RepoAction::NeedsCommit | RepoAction::NeedsPush
-        )
-    }
-}
+use crate::plan::RepoAction;
 
 /// Program to keep git repositories in sync between computers
 #[derive(Parser, Debug)]
@@ -43,17 +20,9 @@ pub(crate) enum Commands {
     Push,
 }
 
-/// Represents whether a repository exists or not
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Existence {
-    Exists,
-    DoesNotExist,
-}
-
 #[derive(Debug)]
 pub(crate) struct RepoStatus {
     pub(crate) path: Utf8PathBuf,
-    pub(crate) existence: Existence,
     pub(crate) branch: String,
     pub(crate) remote: String,
     pub(crate) action: RepoAction,
