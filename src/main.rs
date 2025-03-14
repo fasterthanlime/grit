@@ -53,7 +53,19 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
 
     // If the plan is a no-op, we don't need to ask for consent
     if plan.is_noop() {
-        eprintln!("No actions to perform. Exiting.");
+        let marine_emojis = ["🐠", "🐡", "🦈", "🐙", "🦀", "🐚", "🐳", "🐬", "🦭", "🐟"];
+        let random_emoji = marine_emojis[fastrand::usize(..marine_emojis.len())];
+
+        eprintln!("\n");
+        eprintln!("{}", "========================================".cyan());
+        eprintln!(
+            "{random_emoji} {} {random_emoji}",
+            "Everything's up to date!".green().bold(),
+        );
+        eprintln!("{}", "You're good to go.".blue());
+        eprintln!("{}", "Have a nice day!".magenta());
+        eprintln!("{}", "========================================".cyan());
+        eprintln!("\n");
         return Ok(());
     }
 

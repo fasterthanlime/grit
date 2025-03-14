@@ -8,6 +8,7 @@ camino = "1.1.9"
 clap = { version = "4.5.32", features = ["derive", "color", "suggestions"] }
 color-eyre = "0.6.3"
 eyre = "0.6.12"
+fastrand = "2.3.0"
 owo-colors = "4.2.0"
 shellexpand = "3.1.0"
 tokio = { version = "1.44.1", features = ["full"] }
