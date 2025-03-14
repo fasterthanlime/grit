@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use eyre::Context;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Style};
 use std::fmt;
 use std::io::{self, Write};
 
@@ -169,30 +169,45 @@ impl fmt::Display for ExecutionPlan {
                 SyncMode::Pull => "Pull",
                 SyncMode::Push => "Push",
             }
+            .bright_cyan()
         )?;
 
-        for step in &self.steps {
+        for (step, status) in self.steps.iter().zip(self.repo_statuses.iter()) {
+            writeln!(f, "\n📁 {}", status.path.bright_cyan())?;
+            writeln!(f, "  Branch: {}", status.branch.bright_yellow())?;
+            writeln!(f, "  Remote: {}", status.remote.bright_yellow())?;
+            writeln!(
+                f,
+                "  Status: {}",
+                match status.change_status {
+                    ChangeStatus::HasChanges =>
+                        "Has local changes".style(Style::new().bright_red()),
+                    ChangeStatus::NoChanges =>
+                        "No local changes".style(Style::new().bright_green()),
+                }
+            )?;
+
             match step {
-                ActionStep::Pull(path) => {
-                    writeln!(f, "\n📁 {}", path)?;
-                    writeln!(f, "  Will execute: git pull")?;
+                ActionStep::Pull(_) => {
+                    writeln!(f, "  {}: git pull", "Will execute".bright_blue())?;
                 }
-                ActionStep::AddCommitPush { path, has_changes } => {
-                    writeln!(f, "\n📁 {}", path)?;
+                ActionStep::AddCommitPush { has_changes, .. } => {
                     if *has_changes {
-                        writeln!(f, "  Will execute: git add .")?;
-                        writeln!(f, "  Will prompt for commit message")?;
-                        writeln!(f, "  Will execute: git commit -m <message>")?;
+                        writeln!(f, "  {}: git add .", "Will execute".bright_blue())?;
+                        writeln!(f, "  {}: commit message", "Will prompt for".bright_blue())?;
+                        writeln!(
+                            f,
+                            "  {}: git commit -m <message>",
+                            "Will execute".bright_blue()
+                        )?;
                     }
-                    writeln!(f, "  Will execute: git push")?;
+                    writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
                 }
-                ActionStep::Skip(path, reason) => {
-                    writeln!(f, "\n📁 {}", path)?;
-                    writeln!(f, "  Will skip: {}", reason)?;
+                ActionStep::Skip(_, reason) => {
+                    writeln!(f, "  {}: {}", "Will skip".bright_yellow(), reason)?;
                 }
-                ActionStep::NoAction(path) => {
-                    writeln!(f, "\n📁 {}", path)?;
-                    writeln!(f, "  No action needed")?;
+                ActionStep::NoAction(_) => {
+                    writeln!(f, "  {}", "No action needed".bright_green())?;
                 }
             }
         }
