@@ -223,16 +223,58 @@ async fn real_main() -> eyre::Result<()> {
 }
 
 fn read_repos() -> eyre::Result<Vec<Utf8PathBuf>> {
-    // Read repository list from ~/.config/grit.conf
-    // Format: one repository path per line
     let config_path = shellexpand::tilde("~/.config/grit.conf").to_string();
-    let file = File::open(config_path).wrap_err("Failed to open config file")?;
+    let config_file = Utf8PathBuf::from(&config_path);
+
+    if !config_file.exists() {
+        eprintln!("Config file not found at {config_path}");
+        eprintln!("Would you like to create an empty config file? (yes/no)");
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input)?;
+
+        if input.trim().to_lowercase() == "yes" {
+            let example_config = r#"# Grit configuration file
+# List one repository path per line, e.g.:
+# /home/user/projects/repo1
+# /home/user/projects/repo2
+# ~/Documents/github/my-project
+"#;
+
+            std::fs::write(&config_file, example_config)?;
+
+            eprintln!("Empty config file created at {config_path}");
+            eprintln!("What's your preferred text editor?");
+
+            let mut editor = String::new();
+            io::stdin().read_line(&mut editor)?;
+            editor = editor.trim().to_string();
+
+            if !editor.is_empty() {
+                std::process::Command::new(&editor)
+                    .arg(&config_path)
+                    .status()?;
+            }
+        } else {
+            return Ok(Vec::new());
+        }
+    }
+
+    let file = File::open(&config_file)
+        .wrap_err_with(|| format!("Failed to open config file at {config_path}"))?;
     let reader = io::BufReader::new(file);
     reader
         .lines()
-        .map(|line| {
-            let line = line.wrap_err("Failed to read line")?;
-            Ok(Utf8PathBuf::from(shellexpand::tilde(&line).to_string()))
+        .filter_map(|line| {
+            let line = line.ok()?;
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') || trimmed.is_empty() {
+                None
+            } else {
+                Some(Ok(Utf8PathBuf::from(
+                    shellexpand::tilde(trimmed).to_string(),
+                )))
+            }
         })
         .collect()
 }

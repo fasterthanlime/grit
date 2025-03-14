@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 camino = "1.1.9"
-clap = { version = "4.5.32", features = ["derive"] }
+clap = { version = "4.5.32", features = ["derive", "color", "suggestions"] }
 color-eyre = "0.6.3"
 eyre = "0.6.12"
 owo-colors = "4.2.0"
