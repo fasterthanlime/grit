@@ -98,6 +98,14 @@ pub(crate) struct ExecutionPlan {
 }
 
 impl ExecutionPlan {
+    pub(crate) fn is_noop(&self) -> bool {
+        self.steps
+            .iter()
+            .all(|step| matches!(step, ActionStep::NoAction(_)))
+    }
+}
+
+impl ExecutionPlan {
     pub(crate) fn new(repo_statuses: Vec<RepoStatus>, mode: SyncMode) -> Self {
         let mut steps = Vec::new();
 

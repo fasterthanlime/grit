@@ -52,8 +52,13 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     let plan = ExecutionPlan::new(repo_statuses, mode);
 
     // Display the summary and plan
-    print_summary(&plan);
     eprintln!("{plan}");
+
+    // If the plan is a no-op, we don't need to ask for consent
+    if plan.is_noop() {
+        eprintln!("No actions to perform. Exiting.");
+        return Ok(());
+    }
 
     // Ask for consent before applying the plan
     eprint!(
@@ -74,9 +79,6 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
 
     // Execute the plan
     plan.execute().await?;
-
-    // Print final summary
-    print_final_summary(&plan);
 
     Ok(())
 }
@@ -165,102 +167,4 @@ async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoS
         pull_status,
         push_status,
     })
-}
-
-fn print_summary(plan: &ExecutionPlan) {
-    eprintln!(
-        "\n{} Summary:",
-        match plan.mode {
-            SyncMode::Pull => "Pull",
-            SyncMode::Push => "Push",
-        }
-    );
-
-    for status in &plan.repo_statuses {
-        eprintln!("\n📁 {}", status.path.bright_cyan());
-
-        match status.existence {
-            Existence::DoesNotExist => {
-                eprintln!(
-                    "  {} Directory does not exist or is not a git repository",
-                    "⚠️".yellow()
-                );
-                continue;
-            }
-            Existence::Exists => {}
-        }
-
-        eprintln!("  Branch: {}", status.branch.bright_magenta());
-        eprintln!("  Remote: {}", status.remote.bright_blue());
-
-        if status.branch != "main" && status.branch != "master" {
-            eprintln!("  {} Not on main branch", "⚠️".yellow());
-        }
-
-        match status.change_status {
-            ChangeStatus::HasChanges => eprintln!("  {} Local changes detected", "📝".yellow()),
-            ChangeStatus::NoChanges => {}
-        }
-
-        match (plan.mode, &status.pull_status, &status.push_status) {
-            (SyncMode::Pull, PullStatus::NeedsPull, _) => {
-                eprintln!("  {} Changes to pull", "⬇️".green())
-            }
-            (SyncMode::Push, _, PushStatus::NeedsPush) => {
-                eprintln!("  {} Changes to push", "⬆️".green())
-            }
-            _ => eprintln!("  {} Up to date", "✅".green()),
-        }
-    }
-}
-
-fn print_final_summary(plan: &ExecutionPlan) {
-    eprintln!(
-        "\n{} Final Summary:",
-        match plan.mode {
-            SyncMode::Pull => "Pull",
-            SyncMode::Push => "Push",
-        }
-    );
-
-    for status in &plan.repo_statuses {
-        match status.existence {
-            Existence::DoesNotExist => continue,
-            Existence::Exists => {}
-        }
-
-        eprintln!("\n📁 {}", status.path.bright_cyan());
-        eprintln!("  Branch: {}", status.branch.bright_magenta());
-        eprintln!("  Remote: {}", status.remote.bright_blue());
-
-        match plan.mode {
-            SyncMode::Pull => {
-                eprintln!(
-                    "  {} {}",
-                    match status.pull_status {
-                        PullStatus::NeedsPull => "⬇️",
-                        PullStatus::UpToDate => "✅",
-                    },
-                    match status.pull_status {
-                        PullStatus::NeedsPull => "Changes pulled",
-                        PullStatus::UpToDate => "Already up to date",
-                    }
-                );
-            }
-            SyncMode::Push => {
-                eprintln!(
-                    "  {} {}",
-                    match (&status.push_status, &status.change_status) {
-                        (PushStatus::NeedsPush, _) | (_, ChangeStatus::HasChanges) => "⬆️",
-                        (PushStatus::UpToDate, ChangeStatus::NoChanges) => "✅",
-                    },
-                    match (&status.push_status, &status.change_status) {
-                        (PushStatus::NeedsPush, _) | (_, ChangeStatus::HasChanges) =>
-                            "Changes pushed",
-                        (PushStatus::UpToDate, ChangeStatus::NoChanges) => "No changes to push",
-                    }
-                );
-            }
-        }
-    }
 }
