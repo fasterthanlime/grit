@@ -44,12 +44,15 @@ async fn real_main() -> eyre::Result<()> {
 
 async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     let repos = read_repos_from_default_config()?;
-    let repo_statuses = futures_util::stream::iter(repos.iter())
+    let mut repo_statuses = futures_util::stream::iter(repos.iter())
         .map(|repo| async { get_repo_status(repo).await })
         .buffer_unordered(8)
         .filter_map(|status| async move { status.ok().flatten() })
         .collect::<Vec<_>>()
         .await;
+
+    // Sort repo_statuses by path
+    repo_statuses.sort_by(|a, b| a.path.cmp(&b.path));
 
     // First, create the plan from all gathered data
     let plan = ExecutionPlan::new(repo_statuses, mode);
