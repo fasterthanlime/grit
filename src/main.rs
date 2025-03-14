@@ -22,22 +22,52 @@ enum Commands {
 }
 
 #[derive(Debug)]
+enum Existence {
+    Exists,
+    DoesNotExist,
+}
+
+#[derive(Debug)]
+enum ChangeStatus {
+    HasChanges,
+    NoChanges,
+}
+
+#[derive(Debug)]
+enum PullStatus {
+    NeedsPull,
+    UpToDate,
+}
+
+#[derive(Debug)]
+enum PushStatus {
+    NeedsPush,
+    UpToDate,
+}
+
+#[derive(Debug)]
 struct RepoStatus {
     path: Utf8PathBuf,
-    exists: bool,
+    existence: Existence,
     branch: String,
     remote: String,
-    has_changes: bool,
-    needs_pull: bool,
-    needs_push: bool,
+    change_status: ChangeStatus,
+    pull_status: PullStatus,
+    push_status: PushStatus,
+}
+
+#[derive(Debug)]
+enum SyncMode {
+    Pull,
+    Push,
 }
 
 fn main() {
     let args = Args::parse();
 
     match args.command {
-        Commands::Pull => sync_repos(true),
-        Commands::Push => sync_repos(false),
+        Commands::Pull => sync_repos(SyncMode::Pull),
+        Commands::Push => sync_repos(SyncMode::Push),
     }
 }
 
@@ -55,16 +85,16 @@ fn read_repos() -> Vec<Utf8PathBuf> {
         .collect()
 }
 
-fn sync_repos(is_pull: bool) {
+fn sync_repos(mode: SyncMode) {
     let repos = read_repos();
     let mut repo_statuses = Vec::new();
 
     for repo in repos {
-        let status = get_repo_status(&repo, is_pull);
+        let status = get_repo_status(&repo, &mode);
         repo_statuses.push(status);
     }
 
-    print_summary(&repo_statuses, is_pull);
+    print_summary(&repo_statuses, &mode);
 
     print!("\nDo you want to proceed? Type 'yes' to continue: ");
     io::stdout().flush().unwrap();
@@ -77,166 +107,232 @@ fn sync_repos(is_pull: bool) {
         return;
     }
 
-    execute_plan(&repo_statuses, is_pull);
-    print_final_summary(&repo_statuses, is_pull);
+    execute_plan(&repo_statuses, &mode);
+    print_final_summary(&repo_statuses, &mode);
 }
 
-fn get_repo_status(path: &Utf8Path, is_pull: bool) -> RepoStatus {
-    let exists = path.exists();
-    let branch = if exists {
-        String::from_utf8_lossy(
+fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> RepoStatus {
+    let existence = if path.exists() {
+        Existence::Exists
+    } else {
+        Existence::DoesNotExist
+    };
+    let branch = match existence {
+        Existence::Exists => String::from_utf8_lossy(
             &run_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).stdout,
         )
         .trim()
-        .to_string()
-    } else {
-        String::new()
+        .to_string(),
+        Existence::DoesNotExist => String::new(),
     };
-    let remote = if exists {
-        String::from_utf8_lossy(&run_git_command(path, &["remote", "get-url", "origin"]).stdout)
-            .trim()
-            .to_string()
-    } else {
-        String::new()
+    let remote = match existence {
+        Existence::Exists => {
+            String::from_utf8_lossy(&run_git_command(path, &["remote", "get-url", "origin"]).stdout)
+                .trim()
+                .to_string()
+        }
+        Existence::DoesNotExist => String::new(),
     };
-    let has_changes = exists
-        && !run_git_command(path, &["status", "--porcelain"])
-            .stdout
-            .is_empty();
-    let needs_pull = is_pull
-        && exists
-        && !String::from_utf8_lossy(&run_git_command(path, &["rev-list", "HEAD..@{u}"]).stdout)
-            .trim()
-            .is_empty();
-    let needs_push = !is_pull
-        && exists
-        && !String::from_utf8_lossy(&run_git_command(path, &["rev-list", "@{u}..HEAD"]).stdout)
-            .trim()
-            .is_empty();
+    let change_status = match existence {
+        Existence::Exists => {
+            if run_git_command(path, &["status", "--porcelain"])
+                .stdout
+                .is_empty()
+            {
+                ChangeStatus::NoChanges
+            } else {
+                ChangeStatus::HasChanges
+            }
+        }
+        Existence::DoesNotExist => ChangeStatus::NoChanges,
+    };
+    let pull_status = match (mode, existence) {
+        (SyncMode::Pull, Existence::Exists) => {
+            if String::from_utf8_lossy(&run_git_command(path, &["rev-list", "HEAD..@{u}"]).stdout)
+                .trim()
+                .is_empty()
+            {
+                PullStatus::UpToDate
+            } else {
+                PullStatus::NeedsPull
+            }
+        }
+        _ => PullStatus::UpToDate,
+    };
+    let push_status = match (mode, existence) {
+        (SyncMode::Push, Existence::Exists) => {
+            if String::from_utf8_lossy(&run_git_command(path, &["rev-list", "@{u}..HEAD"]).stdout)
+                .trim()
+                .is_empty()
+            {
+                PushStatus::UpToDate
+            } else {
+                PushStatus::NeedsPush
+            }
+        }
+        _ => PushStatus::UpToDate,
+    };
 
     RepoStatus {
         path: path.to_owned(),
-        exists,
+        existence,
         branch,
         remote,
-        has_changes,
-        needs_pull,
-        needs_push,
+        change_status,
+        pull_status,
+        push_status,
     }
 }
 
-fn print_summary(repo_statuses: &[RepoStatus], is_pull: bool) {
-    println!("\n{} Summary:", if is_pull { "Pull" } else { "Push" });
+fn print_summary(repo_statuses: &[RepoStatus], mode: &SyncMode) {
+    println!(
+        "\n{} Summary:",
+        match mode {
+            SyncMode::Pull => "Pull",
+            SyncMode::Push => "Push",
+        }
+    );
     for status in repo_statuses {
         println!("\n📁 {}", status.path.bright_cyan());
-        if !status.exists {
-            println!("  {} Directory does not exist", "⚠️".yellow());
-            continue;
+        match status.existence {
+            Existence::DoesNotExist => {
+                println!("  {} Directory does not exist", "⚠️".yellow());
+                continue;
+            }
+            Existence::Exists => {}
         }
         println!("  Branch: {}", status.branch.bright_magenta());
         println!("  Remote: {}", status.remote.bright_blue());
         if status.branch != "main" && status.branch != "master" {
             println!("  {} Not on main branch", "⚠️".yellow());
         }
-        if status.has_changes {
-            println!("  {} Local changes detected", "📝".yellow());
+        match status.change_status {
+            ChangeStatus::HasChanges => println!("  {} Local changes detected", "📝".yellow()),
+            ChangeStatus::NoChanges => {}
         }
-        if is_pull && status.needs_pull {
-            println!("  {} Changes to pull", "⬇️".green());
-        } else if !is_pull && status.needs_push {
-            println!("  {} Changes to push", "⬆️".green());
-        } else {
-            println!("  {} Up to date", "✅".green());
+        match (mode, &status.pull_status, &status.push_status) {
+            (SyncMode::Pull, PullStatus::NeedsPull, _) => {
+                println!("  {} Changes to pull", "⬇️".green())
+            }
+            (SyncMode::Push, _, PushStatus::NeedsPush) => {
+                println!("  {} Changes to push", "⬆️".green())
+            }
+            _ => println!("  {} Up to date", "✅".green()),
         }
     }
 }
 
-fn execute_plan(repo_statuses: &[RepoStatus], is_pull: bool) {
+fn execute_plan(repo_statuses: &[RepoStatus], mode: &SyncMode) {
     for status in repo_statuses {
-        if !status.exists {
-            continue;
+        match status.existence {
+            Existence::DoesNotExist => continue,
+            Existence::Exists => {}
         }
 
         println!("\n📁 {}", status.path.bright_cyan());
 
-        if is_pull && status.needs_pull {
-            let output = run_git_command(&status.path, &["pull"]);
-            if output.status.success() {
-                println!("  {} Successfully pulled changes", "✅".green());
-            } else {
-                println!("  {} Failed to pull changes", "❌".red());
-                println!("{}", String::from_utf8_lossy(&output.stderr));
+        match (
+            mode,
+            &status.pull_status,
+            &status.push_status,
+            &status.change_status,
+        ) {
+            (SyncMode::Pull, PullStatus::NeedsPull, _, _) => {
+                let output = run_git_command(&status.path, &["pull"]);
+                if output.status.success() {
+                    println!("  {} Successfully pulled changes", "✅".green());
+                } else {
+                    println!("  {} Failed to pull changes", "❌".red());
+                    println!("{}", String::from_utf8_lossy(&output.stderr));
+                }
             }
-        } else if !is_pull && (status.has_changes || status.needs_push) {
-            if status.has_changes {
-                let add_output = run_git_command(&status.path, &["add", "."]);
-                if !add_output.status.success() {
-                    println!("  {} Failed to stage changes", "❌".red());
-                    println!("{}", String::from_utf8_lossy(&add_output.stderr));
-                    continue;
+            (SyncMode::Push, _, PushStatus::NeedsPush, _)
+            | (SyncMode::Push, _, _, ChangeStatus::HasChanges) => {
+                match status.change_status {
+                    ChangeStatus::HasChanges => {
+                        let add_output = run_git_command(&status.path, &["add", "."]);
+                        if !add_output.status.success() {
+                            println!("  {} Failed to stage changes", "❌".red());
+                            println!("{}", String::from_utf8_lossy(&add_output.stderr));
+                            continue;
+                        }
+
+                        print!("  Enter commit message: ");
+                        io::stdout().flush().unwrap();
+                        let mut commit_msg = String::new();
+                        io::stdin().read_line(&mut commit_msg).unwrap();
+
+                        let commit_output =
+                            run_git_command(&status.path, &["commit", "-m", commit_msg.trim()]);
+                        if !commit_output.status.success() {
+                            println!("  {} Failed to commit changes", "❌".red());
+                            println!("{}", String::from_utf8_lossy(&commit_output.stderr));
+                            continue;
+                        }
+                        println!("  {} Changes committed", "✅".green());
+                    }
+                    ChangeStatus::NoChanges => {}
                 }
 
-                print!("  Enter commit message: ");
-                io::stdout().flush().unwrap();
-                let mut commit_msg = String::new();
-                io::stdin().read_line(&mut commit_msg).unwrap();
-
-                let commit_output =
-                    run_git_command(&status.path, &["commit", "-m", commit_msg.trim()]);
-                if !commit_output.status.success() {
-                    println!("  {} Failed to commit changes", "❌".red());
-                    println!("{}", String::from_utf8_lossy(&commit_output.stderr));
-                    continue;
+                let push_output = run_git_command(&status.path, &["push"]);
+                if push_output.status.success() {
+                    println!("  {} Successfully pushed changes", "✅".green());
+                } else {
+                    println!("  {} Failed to push changes", "❌".red());
+                    println!("{}", String::from_utf8_lossy(&push_output.stderr));
                 }
-                println!("  {} Changes committed", "✅".green());
             }
-
-            let push_output = run_git_command(&status.path, &["push"]);
-            if push_output.status.success() {
-                println!("  {} Successfully pushed changes", "✅".green());
-            } else {
-                println!("  {} Failed to push changes", "❌".red());
-                println!("{}", String::from_utf8_lossy(&push_output.stderr));
+            _ => {
+                println!("  {} No action needed", "ℹ️".blue());
             }
-        } else {
-            println!("  {} No action needed", "ℹ️".blue());
         }
     }
 }
 
-fn print_final_summary(repo_statuses: &[RepoStatus], is_pull: bool) {
-    println!("\n{} Final Summary:", if is_pull { "Pull" } else { "Push" });
+fn print_final_summary(repo_statuses: &[RepoStatus], mode: &SyncMode) {
+    println!(
+        "\n{} Final Summary:",
+        match mode {
+            SyncMode::Pull => "Pull",
+            SyncMode::Push => "Push",
+        }
+    );
     for status in repo_statuses {
-        if !status.exists {
-            continue;
+        match status.existence {
+            Existence::DoesNotExist => continue,
+            Existence::Exists => {}
         }
         println!("\n📁 {}", status.path.bright_cyan());
         println!("  Branch: {}", status.branch.bright_magenta());
         println!("  Remote: {}", status.remote.bright_blue());
-        if is_pull {
-            println!(
-                "  {} {}",
-                if status.needs_pull { "⬇️" } else { "✅" },
-                if status.needs_pull {
-                    "Changes pulled"
-                } else {
-                    "Already up to date"
-                }
-            );
-        } else {
-            println!(
-                "  {} {}",
-                if status.needs_push || status.has_changes {
-                    "⬆️"
-                } else {
-                    "✅"
-                },
-                if status.needs_push || status.has_changes {
-                    "Changes pushed"
-                } else {
-                    "No changes to push"
-                }
-            );
+        match mode {
+            SyncMode::Pull => {
+                println!(
+                    "  {} {}",
+                    match status.pull_status {
+                        PullStatus::NeedsPull => "⬇️",
+                        PullStatus::UpToDate => "✅",
+                    },
+                    match status.pull_status {
+                        PullStatus::NeedsPull => "Changes pulled",
+                        PullStatus::UpToDate => "Already up to date",
+                    }
+                );
+            }
+            SyncMode::Push => {
+                println!(
+                    "  {} {}",
+                    match (&status.push_status, &status.change_status) {
+                        (PushStatus::NeedsPush, _) | (_, ChangeStatus::HasChanges) => "⬆️",
+                        (PushStatus::UpToDate, ChangeStatus::NoChanges) => "✅",
+                    },
+                    match (&status.push_status, &status.change_status) {
+                        (PushStatus::NeedsPush, _) | (_, ChangeStatus::HasChanges) =>
+                            "Changes pushed",
+                        (PushStatus::UpToDate, ChangeStatus::NoChanges) => "No changes to push",
+                    }
+                );
+            }
         }
     }
 }
