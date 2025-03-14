@@ -14,8 +14,6 @@ pub(crate) enum ActionStep {
         path: Utf8PathBuf,
         has_changes: bool,
     },
-    Skip(Utf8PathBuf, String),
-    NoAction(Utf8PathBuf),
 }
 
 impl ActionStep {
@@ -77,16 +75,6 @@ impl ActionStep {
 
                 Ok(())
             }
-            ActionStep::Skip(path, reason) => {
-                eprintln!("\n📁 {}", path.bright_cyan());
-                eprintln!("  {} {reason}", "⚠️".yellow());
-                Ok(())
-            }
-            ActionStep::NoAction(path) => {
-                eprintln!("\n📁 {}", path.bright_cyan());
-                eprintln!("  {} No action needed", "ℹ️".blue());
-                Ok(())
-            }
         }
     }
 }
@@ -99,9 +87,7 @@ pub(crate) struct ExecutionPlan {
 
 impl ExecutionPlan {
     pub(crate) fn is_noop(&self) -> bool {
-        self.steps
-            .iter()
-            .all(|step| matches!(step, ActionStep::NoAction(_)))
+        self.steps.is_empty()
     }
 }
 
@@ -110,37 +96,24 @@ impl ExecutionPlan {
         let mut steps = Vec::new();
 
         for status in &repo_statuses {
-            match status.existence {
-                Existence::DoesNotExist => {
-                    steps.push(ActionStep::Skip(
-                        status.path.clone(),
-                        "Directory does not exist or is not a git repository".to_string(),
-                    ));
-                }
-                Existence::Exists => {
-                    match (
-                        &mode,
-                        &status.pull_status,
-                        &status.push_status,
-                        &status.change_status,
-                    ) {
-                        (SyncMode::Pull, PullStatus::NeedsPull, _, _) => {
-                            steps.push(ActionStep::Pull(status.path.clone()));
-                        }
-                        (SyncMode::Push, _, PushStatus::NeedsPush, _)
-                        | (SyncMode::Push, _, _, ChangeStatus::HasChanges) => {
-                            steps.push(ActionStep::AddCommitPush {
-                                path: status.path.clone(),
-                                has_changes: matches!(
-                                    status.change_status,
-                                    ChangeStatus::HasChanges
-                                ),
-                            });
-                        }
-                        _ => {
-                            steps.push(ActionStep::NoAction(status.path.clone()));
-                        }
+            if status.existence == Existence::Exists {
+                match (
+                    &mode,
+                    &status.pull_status,
+                    &status.push_status,
+                    &status.change_status,
+                ) {
+                    (SyncMode::Pull, PullStatus::NeedsPull, _, _) => {
+                        steps.push(ActionStep::Pull(status.path.clone()));
                     }
+                    (SyncMode::Push, _, PushStatus::NeedsPush, _)
+                    | (SyncMode::Push, _, _, ChangeStatus::HasChanges) => {
+                        steps.push(ActionStep::AddCommitPush {
+                            path: status.path.clone(),
+                            has_changes: matches!(status.change_status, ChangeStatus::HasChanges),
+                        });
+                    }
+                    _ => {}
                 }
             }
         }
@@ -174,8 +147,12 @@ impl fmt::Display for ExecutionPlan {
 
         for (step, status) in self.steps.iter().zip(self.repo_statuses.iter()) {
             writeln!(f, "\n📁 {}", status.path.bright_cyan())?;
-            writeln!(f, "  Branch: {}", status.branch.bright_yellow())?;
-            writeln!(f, "  Remote: {}", status.remote.bright_yellow())?;
+            writeln!(
+                f,
+                "  {} @ {}",
+                status.branch.bright_yellow(),
+                status.remote.bright_yellow()
+            )?;
             writeln!(
                 f,
                 "  Status: {}",
@@ -202,12 +179,6 @@ impl fmt::Display for ExecutionPlan {
                         )?;
                     }
                     writeln!(f, "  {}: git push", "Will execute".bright_blue())?;
-                }
-                ActionStep::Skip(_, reason) => {
-                    writeln!(f, "  {}: {}", "Will skip".bright_yellow(), reason)?;
-                }
-                ActionStep::NoAction(_) => {
-                    writeln!(f, "  {}", "No action needed".bright_green())?;
                 }
             }
         }

@@ -51,14 +51,14 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     // First, create the plan from all gathered data
     let plan = ExecutionPlan::new(repo_statuses, mode);
 
-    // Display the summary and plan
-    eprintln!("{plan}");
-
     // If the plan is a no-op, we don't need to ask for consent
     if plan.is_noop() {
         eprintln!("No actions to perform. Exiting.");
         return Ok(());
     }
+
+    // Display the summary and plan
+    eprintln!("{plan}");
 
     // Ask for consent before applying the plan
     eprint!(
