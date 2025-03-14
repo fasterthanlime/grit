@@ -45,7 +45,7 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     let repo_statuses = futures_util::stream::iter(repos.iter())
         .map(|repo| async { get_repo_status(repo, &mode).await })
         .buffer_unordered(8)
-        .filter_map(|status| async move { status })
+        .filter_map(|status| async move { status.ok().flatten() })
         .collect::<Vec<_>>()
         .await;
 
@@ -57,16 +57,66 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
         let marine_emojis = ["🐠", "🐡", "🦈", "🐙", "🦀", "🐚", "🐳", "🐬", "🦭", "🐟"];
         let random_emoji = marine_emojis[fastrand::usize(..marine_emojis.len())];
 
-        eprintln!("\n");
+        let cheerful_messages = [
+            "Everything's shipshape and Bristol fashion!",
+            "You're on top of your game!",
+            "Smooth sailing ahead!",
+            "You're crushing it!",
+            "High five for being up-to-date!",
+            "You're a git wizard, Harry!",
+            "Code so fresh, it should be illegal!",
+            "Repo goals achieved!",
+            "You're in sync with the universe!",
+            "Git-tastic work!",
+            "You've got your ducks in a row!",
+            "Cleaner than a whistle!",
+            "Your repo game is strong!",
+            "Synced and ready to rock!",
+            "You're the captain of this ship!",
+            "Smooth as butter!",
+            "Git-er done? More like git-er already done!",
+            "You're firing on all cylinders!",
+            "Repo perfection achieved!",
+            "You're in the git zone!",
+            "Commits so clean, they sparkle!",
+            "Your repo is a thing of beauty!",
+            "Git-standing work!",
+            "You're a lean, mean, syncing machine!",
+            "Repository bliss achieved!",
+            "You're the git master!",
+            "Synced to perfection!",
+            "Your repo is a work of art!",
+            "Git-cellent job!",
+            "You're on fire (in a good way)!",
+            "Repo harmony restored!",
+            "You've got the Midas touch!",
+            "Git-tacular performance!",
+            "You're the git whisperer!",
+            "Synced and fabulous!",
+            "Your repo is a shining example!",
+            "Git-credible work!",
+            "You're in perfect harmony!",
+            "Repo nirvana achieved!",
+            "You're a git superhero!",
+            "Synced to the nines!",
+            "Your repo is poetry in motion!",
+            "Git-mazing job!",
+            "You're the king/queen of version control!",
+            "Repo zen achieved!",
+            "You've got git-game!",
+            "Synced and sensational!",
+            "Your repo is a masterpiece!",
+            "Git-errific work!",
+            "You're the git guru!",
+        ];
+
+        let message1 = cheerful_messages[fastrand::usize(..cheerful_messages.len())];
+        let message2 = cheerful_messages[fastrand::usize(..cheerful_messages.len())];
+
         eprintln!("{}", "========================================".cyan());
-        eprintln!(
-            "{random_emoji} {} {random_emoji}",
-            "Everything's up to date!".green().bold(),
-        );
-        eprintln!("{}", "You're good to go.".blue());
-        eprintln!("{}", "Have a nice day!".magenta());
+        eprintln!("{} {}", random_emoji, message1.green().bold());
+        eprintln!("{} {}", random_emoji, message2.blue());
         eprintln!("{}", "========================================".cyan());
-        eprintln!("\n");
         return Ok(());
     }
 
@@ -96,172 +146,114 @@ async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
     Ok(())
 }
 
-async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> Option<RepoStatus> {
-    if !path.exists() || !path.join(".git").is_dir() {
+// RULES:
+// Things that are non-fatal (return Ok(None))
+//   - the directory does not exist
+// Things that should be fatal (return an error)
+//   - the directory is not a git repo
+//   - any of the git gathering commands fail
+async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<Option<RepoStatus>> {
+    if !path.exists() {
         eprintln!(
-            "  {} {} is not a valid git repository",
+            "  {} {} does not exist",
             "⚠️".yellow(),
             path.to_string().bright_cyan()
         );
-        return None;
+        return Ok(None);
     }
 
-    let branch = match git::run_git_command_quiet(
+    if !path.join(".git").is_dir() {
+        return Err(eyre::eyre!(
+            "{} is not a valid git repository",
+            path.to_string().red()
+        ));
+    }
+
+    let branch = git::run_git_command_quiet(
         path,
         &["rev-parse", "--abbrev-ref", "HEAD"],
         git::GitCommandBehavior::AssertZeroExitCode,
     )
-    .await
-    {
-        Ok(output) => output.stdout.trim().to_string(),
-        Err(e) => {
-            eprintln!(
-                "  {} Failed to get branch for {}: {e}",
-                "⚠️".yellow(),
-                path.to_string().bright_cyan(),
-            );
-            return None;
-        }
-    };
+    .await?
+    .stdout
+    .trim()
+    .to_string();
 
-    let remote = match git::run_git_command_quiet(
+    let remote = git::run_git_command_quiet(
         path,
         &["remote", "get-url", "origin"],
         git::GitCommandBehavior::AssertZeroExitCode,
     )
-    .await
-    {
-        Ok(output) => output.stdout.trim().to_string(),
-        Err(e) => {
-            eprintln!(
-                "  {} Failed to get remote for {}: {e}",
-                "⚠️".yellow(),
-                path.to_string().bright_cyan(),
-            );
-            return None;
-        }
-    };
+    .await?
+    .stdout
+    .trim()
+    .to_string();
 
-    let action = match mode {
+    let action: Option<RepoAction> = match mode {
         SyncMode::Push => {
-            let status_output = match git::run_git_command_quiet(
+            let status_output = git::run_git_command_quiet(
                 path,
                 &["status", "--porcelain"],
                 git::GitCommandBehavior::AssertZeroExitCode,
             )
-            .await
-            {
-                Ok(output) => output,
-                Err(e) => {
-                    eprintln!(
-                        "  {} Failed to get status for {}: {e}",
-                        "⚠️".yellow(),
-                        path.to_string().bright_cyan(),
-                    );
-                    return None;
-                }
-            };
+            .await?;
 
-            let staged_output = match git::run_git_command_quiet(
+            let staged_output = git::run_git_command_quiet(
                 path,
                 &["diff", "--cached", "--quiet"],
                 git::GitCommandBehavior::AllowNonZeroExitCode,
             )
-            .await
-            {
-                Ok(output) => output,
-                Err(e) => {
-                    eprintln!(
-                        "  {} Failed to check staged changes for {}: {e}",
-                        "⚠️".yellow(),
-                        path.to_string().bright_cyan(),
-                    );
-                    return None;
-                }
-            };
+            .await?;
 
-            let rev_list_output = match git::run_git_command_quiet(
+            let rev_list_output = git::run_git_command_quiet(
                 path,
                 &["rev-list", "@{u}..HEAD"],
                 git::GitCommandBehavior::AssertZeroExitCode,
             )
-            .await
-            {
-                Ok(output) => output,
-                Err(e) => {
-                    eprintln!(
-                        "  {} Failed to check unpushed commits for {}: {e}",
-                        "⚠️".yellow(),
-                        path.to_string().bright_cyan(),
-                    );
-                    return None;
-                }
-            };
+            .await?;
 
             if !status_output.stdout.trim().is_empty() {
-                RepoAction::Stage
+                Some(RepoAction::Stage)
             } else if staged_output.status.code() == Some(1) {
-                RepoAction::Commit
+                Some(RepoAction::Commit)
             } else if !rev_list_output.stdout.trim().is_empty() {
-                RepoAction::Push
+                Some(RepoAction::Push)
             } else {
-                return None;
+                None
             }
         }
         SyncMode::Pull => {
-            let fetch_output = match git::run_git_command_quiet(
+            let fetch_output = git::run_git_command_quiet(
                 path,
                 &["fetch", "--all"],
                 git::GitCommandBehavior::AssertZeroExitCode,
             )
-            .await
-            {
-                Ok(output) => output,
-                Err(e) => {
-                    eprintln!(
-                        "  {} Failed to fetch changes for {}: {e}",
-                        "⚠️".yellow(),
-                        path.to_string().bright_cyan(),
-                    );
-                    return None;
-                }
-            };
+            .await?;
 
             if !fetch_output.stderr.is_empty() {
                 eprintln!("  {} Failed to fetch changes", "⚠️".yellow());
-                eprintln!("{}", fetch_output.stderr);
+                eprintln!("{}", fetch_output.stderr.red());
             }
 
-            let rev_list_output = match git::run_git_command_quiet(
+            let rev_list_output = git::run_git_command_quiet(
                 path,
                 &["rev-list", "HEAD..@{u}"],
                 git::GitCommandBehavior::AssertZeroExitCode,
             )
-            .await
-            {
-                Ok(output) => output,
-                Err(e) => {
-                    eprintln!(
-                        "  {} Failed to check for updates in {}: {e}",
-                        "⚠️".yellow(),
-                        path.to_string().bright_cyan(),
-                    );
-                    return None;
-                }
-            };
+            .await?;
 
             if rev_list_output.stdout.trim().is_empty() {
-                return None;
+                None
             } else {
-                RepoAction::Pull
+                Some(RepoAction::Pull)
             }
         }
     };
 
-    Some(RepoStatus {
+    Ok(Some(RepoStatus {
         path: path.to_owned(),
         branch,
         remote,
         action,
-    })
+    }))
 }

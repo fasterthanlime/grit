@@ -25,7 +25,7 @@ pub(crate) struct RepoStatus {
     pub(crate) path: Utf8PathBuf,
     pub(crate) branch: String,
     pub(crate) remote: String,
-    pub(crate) action: RepoAction,
+    pub(crate) action: Option<RepoAction>,
 }
 
 /// Defines the mode of synchronization

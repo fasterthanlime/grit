@@ -107,20 +107,24 @@ impl ExecutionPlan {
         let mut steps = Vec::new();
 
         for status in &repo_statuses {
+            let Some(action) = &status.action else {
+                continue;
+            };
+
             match mode {
                 SyncMode::Push => {
-                    if status.action.needs_stage() {
+                    if action.needs_stage() {
                         steps.push(ActionStep::Stage(status.path.clone()));
                     }
-                    if status.action.needs_commit() {
+                    if action.needs_commit() {
                         steps.push(ActionStep::Commit(status.path.clone()));
                     }
-                    if status.action.needs_push() {
+                    if action.needs_push() {
                         steps.push(ActionStep::Push(status.path.clone()));
                     }
                 }
                 SyncMode::Pull => {
-                    if status.action.needs_push() {
+                    if action.needs_push() {
                         steps.push(ActionStep::Pull(status.path.clone()));
                     }
                 }
