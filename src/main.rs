@@ -320,9 +320,22 @@ impl fmt::Display for ExecutionPlan {
                 status.path.clone()
             };
             let normalized_remote = normalize_remote(&status.remote);
+            let emoji = if status.has_unstaged_changes {
+                "🔄"
+            } else if status.has_staged_changes {
+                "📦"
+            } else if status.has_unpushed_commits {
+                "⬆️"
+            } else if status.has_unpulled_commits {
+                "⬇️"
+            } else {
+                "✅"
+            };
+
             writeln!(
                 f,
-                "📁 {} {} @ {}",
+                "{} {} {} @ {}",
+                emoji,
                 display_path.bright_cyan(),
                 status.branch.bright_green(),
                 normalized_remote
