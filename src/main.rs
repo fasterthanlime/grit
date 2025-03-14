@@ -1,144 +1,100 @@
 use camino::{Utf8Path, Utf8PathBuf};
-use clap::{Parser, Subcommand};
+use cli::{Args, ChangeStatus, Commands, Existence, PullStatus, PushStatus, RepoStatus, SyncMode};
+use eyre::Context;
 use owo_colors::OwoColorize;
 use std::fs::File;
 use std::io::{self, BufRead, Write};
-use std::process::{Command, Output};
 
-/// Program to keep git repositories in sync between computers
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    #[command(subcommand)]
-    command: Commands,
+mod cli;
+mod git;
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> eyre::Result<()> {
+    real_main().await
 }
 
-#[derive(Subcommand, Debug)]
-enum Commands {
-    /// Pull latest changes for all repositories
-    Pull,
-    /// Push local changes for all repositories
-    Push,
-}
+async fn real_main() -> eyre::Result<()> {
+    color_eyre::install()?;
 
-#[derive(Debug)]
-enum Existence {
-    Exists,
-    DoesNotExist,
-}
-
-#[derive(Debug)]
-enum ChangeStatus {
-    HasChanges,
-    NoChanges,
-}
-
-#[derive(Debug)]
-enum PullStatus {
-    NeedsPull,
-    UpToDate,
-}
-
-#[derive(Debug)]
-enum PushStatus {
-    NeedsPush,
-    UpToDate,
-}
-
-#[derive(Debug)]
-struct RepoStatus {
-    path: Utf8PathBuf,
-    existence: Existence,
-    branch: String,
-    remote: String,
-    change_status: ChangeStatus,
-    pull_status: PullStatus,
-    push_status: PushStatus,
-}
-
-#[derive(Debug)]
-enum SyncMode {
-    Pull,
-    Push,
-}
-
-fn main() {
     let args = Args::parse();
 
     match args.command {
-        Commands::Pull => sync_repos(SyncMode::Pull),
-        Commands::Push => sync_repos(SyncMode::Push),
+        Commands::Pull => sync_repos(SyncMode::Pull).await?,
+        Commands::Push => sync_repos(SyncMode::Push).await?,
     }
+
+    Ok(())
 }
 
-fn read_repos() -> Vec<Utf8PathBuf> {
+fn read_repos() -> eyre::Result<Vec<Utf8PathBuf>> {
     // Read repository list from ~/.config/grit.conf
     // Format: one repository path per line
     let config_path = shellexpand::tilde("~/.config/grit.conf").to_string();
-    let file = File::open(config_path).expect("Failed to open config file");
+    let file = File::open(config_path).wrap_err("Failed to open config file")?;
     let reader = io::BufReader::new(file);
     reader
         .lines()
         .map(|line| {
-            Utf8PathBuf::from(shellexpand::tilde(&line.expect("Failed to read line")).to_string())
+            let line = line.wrap_err("Failed to read line")?;
+            Ok(Utf8PathBuf::from(shellexpand::tilde(&line).to_string()))
         })
         .collect()
 }
 
-fn sync_repos(mode: SyncMode) {
-    let repos = read_repos();
+async fn sync_repos(mode: SyncMode) -> eyre::Result<()> {
+    let repos = read_repos()?;
     let mut repo_statuses = Vec::new();
 
     for repo in repos {
-        let status = get_repo_status(&repo, &mode);
+        let status = get_repo_status(&repo, &mode).await?;
         repo_statuses.push(status);
     }
 
     print_summary(&repo_statuses, &mode);
 
     print!("\nDo you want to proceed? Type 'yes' to continue: ");
-    io::stdout().flush().unwrap();
+    io::stdout().flush().wrap_err("Failed to flush stdout")?;
 
     let mut input = String::new();
-    io::stdin().read_line(&mut input).unwrap();
+    io::stdin()
+        .read_line(&mut input)
+        .wrap_err("Failed to read input")?;
 
     if input.trim() != "yes" {
         println!("Operation cancelled.");
-        return;
+        return Ok(());
     }
 
-    execute_plan(&repo_statuses, &mode);
+    execute_plan(&repo_statuses, &mode).await?;
     print_final_summary(&repo_statuses, &mode);
+
+    Ok(())
 }
 
-fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> RepoStatus {
+async fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> eyre::Result<RepoStatus> {
     let existence = if path.exists() {
         Existence::Exists
     } else {
         Existence::DoesNotExist
     };
     let branch = match existence {
-        Existence::Exists => String::from_utf8_lossy(
-            &run_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).stdout,
-        )
-        .trim()
-        .to_string(),
+        Existence::Exists => {
+            let output = git::run_git_command(path, &["rev-parse", "--abbrev-ref", "HEAD"]).await?;
+            output.stdout.trim().to_string()
+        }
         Existence::DoesNotExist => String::new(),
     };
     let remote = match existence {
         Existence::Exists => {
-            String::from_utf8_lossy(&run_git_command(path, &["remote", "get-url", "origin"]).stdout)
-                .trim()
-                .to_string()
+            let output = git::run_git_command(path, &["remote", "get-url", "origin"]).await?;
+            output.stdout.trim().to_string()
         }
         Existence::DoesNotExist => String::new(),
     };
     let change_status = match existence {
         Existence::Exists => {
-            if run_git_command(path, &["status", "--porcelain"])
-                .stdout
-                .is_empty()
-            {
+            let output = git::run_git_command(path, &["status", "--porcelain"]).await?;
+            if output.stdout.is_empty() {
                 ChangeStatus::NoChanges
             } else {
                 ChangeStatus::HasChanges
@@ -148,10 +104,8 @@ fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> RepoStatus {
     };
     let pull_status = match (mode, existence) {
         (SyncMode::Pull, Existence::Exists) => {
-            if String::from_utf8_lossy(&run_git_command(path, &["rev-list", "HEAD..@{u}"]).stdout)
-                .trim()
-                .is_empty()
-            {
+            let output = git::run_git_command(path, &["rev-list", "HEAD..@{u}"]).await?;
+            if output.stdout.trim().is_empty() {
                 PullStatus::UpToDate
             } else {
                 PullStatus::NeedsPull
@@ -161,10 +115,8 @@ fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> RepoStatus {
     };
     let push_status = match (mode, existence) {
         (SyncMode::Push, Existence::Exists) => {
-            if String::from_utf8_lossy(&run_git_command(path, &["rev-list", "@{u}..HEAD"]).stdout)
-                .trim()
-                .is_empty()
-            {
+            let output = git::run_git_command(path, &["rev-list", "@{u}..HEAD"]).await?;
+            if output.stdout.trim().is_empty() {
                 PushStatus::UpToDate
             } else {
                 PushStatus::NeedsPush
@@ -173,7 +125,7 @@ fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> RepoStatus {
         _ => PushStatus::UpToDate,
     };
 
-    RepoStatus {
+    Ok(RepoStatus {
         path: path.to_owned(),
         existence,
         branch,
@@ -181,7 +133,7 @@ fn get_repo_status(path: &Utf8Path, mode: &SyncMode) -> RepoStatus {
         change_status,
         pull_status,
         push_status,
-    }
+    })
 }
 
 fn print_summary(repo_statuses: &[RepoStatus], mode: &SyncMode) {
@@ -222,7 +174,7 @@ fn print_summary(repo_statuses: &[RepoStatus], mode: &SyncMode) {
     }
 }
 
-fn execute_plan(repo_statuses: &[RepoStatus], mode: &SyncMode) {
+async fn execute_plan(repo_statuses: &[RepoStatus], mode: &SyncMode) -> eyre::Result<()> {
     for status in repo_statuses {
         match status.existence {
             Existence::DoesNotExist => continue,
@@ -238,22 +190,22 @@ fn execute_plan(repo_statuses: &[RepoStatus], mode: &SyncMode) {
             &status.change_status,
         ) {
             (SyncMode::Pull, PullStatus::NeedsPull, _, _) => {
-                let output = run_git_command(&status.path, &["pull"]);
-                if output.status.success() {
+                let output = git::run_git_command(&status.path, &["pull"]).await?;
+                if output.stdout.contains("Already up to date.") {
                     println!("  {} Successfully pulled changes", "✅".green());
                 } else {
                     println!("  {} Failed to pull changes", "❌".red());
-                    println!("{}", String::from_utf8_lossy(&output.stderr));
+                    println!("{}", output.stderr);
                 }
             }
             (SyncMode::Push, _, PushStatus::NeedsPush, _)
             | (SyncMode::Push, _, _, ChangeStatus::HasChanges) => {
                 match status.change_status {
                     ChangeStatus::HasChanges => {
-                        let add_output = run_git_command(&status.path, &["add", "."]);
-                        if !add_output.status.success() {
+                        let add_output = git::run_git_command(&status.path, &["add", "."]).await?;
+                        if !add_output.stderr.is_empty() {
                             println!("  {} Failed to stage changes", "❌".red());
-                            println!("{}", String::from_utf8_lossy(&add_output.stderr));
+                            println!("{}", add_output.stderr);
                             continue;
                         }
 
@@ -262,11 +214,14 @@ fn execute_plan(repo_statuses: &[RepoStatus], mode: &SyncMode) {
                         let mut commit_msg = String::new();
                         io::stdin().read_line(&mut commit_msg).unwrap();
 
-                        let commit_output =
-                            run_git_command(&status.path, &["commit", "-m", commit_msg.trim()]);
-                        if !commit_output.status.success() {
+                        let commit_output = git::run_git_command(
+                            &status.path,
+                            &["commit", "-m", commit_msg.trim()],
+                        )
+                        .await?;
+                        if !commit_output.stderr.is_empty() {
                             println!("  {} Failed to commit changes", "❌".red());
-                            println!("{}", String::from_utf8_lossy(&commit_output.stderr));
+                            println!("{}", commit_output.stderr);
                             continue;
                         }
                         println!("  {} Changes committed", "✅".green());
@@ -274,12 +229,12 @@ fn execute_plan(repo_statuses: &[RepoStatus], mode: &SyncMode) {
                     ChangeStatus::NoChanges => {}
                 }
 
-                let push_output = run_git_command(&status.path, &["push"]);
-                if push_output.status.success() {
+                let push_output = git::run_git_command(&status.path, &["push"]).await?;
+                if push_output.stderr.is_empty() {
                     println!("  {} Successfully pushed changes", "✅".green());
                 } else {
                     println!("  {} Failed to push changes", "❌".red());
-                    println!("{}", String::from_utf8_lossy(&push_output.stderr));
+                    println!("{}", push_output.stderr);
                 }
             }
             _ => {
@@ -287,6 +242,7 @@ fn execute_plan(repo_statuses: &[RepoStatus], mode: &SyncMode) {
             }
         }
     }
+    Ok(())
 }
 
 fn print_final_summary(repo_statuses: &[RepoStatus], mode: &SyncMode) {
@@ -335,12 +291,4 @@ fn print_final_summary(repo_statuses: &[RepoStatus], mode: &SyncMode) {
             }
         }
     }
-}
-
-fn run_git_command(path: &Utf8Path, args: &[&str]) -> Output {
-    Command::new("git")
-        .current_dir(path)
-        .args(args)
-        .output()
-        .expect("Failed to execute git command")
 }
