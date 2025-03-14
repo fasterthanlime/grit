@@ -258,11 +258,20 @@ impl ExecutionPlan {
                         git::assert_git_command(&repo_plan.status.path, &["add", "."]).await?;
                     }
                     ActionStep::Commit => {
-                        tokio::process::Command::new("git")
-                            .current_dir(&repo_plan.status.path)
-                            .arg("commit")
-                            .status()
-                            .await?;
+                        // Show git diff of staged changes
+                        let diff_output =
+                            git::assert_git_command(&repo_plan.status.path, &["diff", "--cached"])
+                                .await?;
+                        eprintln!("Staged changes:");
+                        eprintln!("{}", diff_output.stdout);
+
+                        // Wait for user to press Enter
+                        eprintln!("Press Enter to continue with commit...");
+                        let mut input = String::new();
+                        std::io::stdin().read_line(&mut input)?;
+
+                        // Proceed with commit
+                        git::assert_git_command(&repo_plan.status.path, &["commit"]).await?;
                     }
                     ActionStep::Push => {
                         git::assert_git_command(&repo_plan.status.path, &["push"]).await?;
